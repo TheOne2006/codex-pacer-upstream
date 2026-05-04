@@ -10,12 +10,14 @@ use chrono::{
 use rusqlite::Connection;
 use serde_json::Value;
 
-use crate::database::{get_subscription_profile, list_subscription_records, open_connection};
+use crate::database::{
+    get_subscription_profile, list_codex_sources, list_subscription_records, open_connection,
+};
 use crate::models::{
   CompositionShare, ConversationDetail, ConversationFilters, ConversationListItem,
   ConversationSessionSummary, ConversationTurnPoint, LiveRateLimitSnapshot, ModelShare,
-  OverviewResponse, OverviewStats, PricingCatalogEntry, QuotaTrendPoint, SubscriptionProfile,
-  SubscriptionRecord, TokenUsage, TrendPoint,
+    OverviewResponse, OverviewStats, PricingCatalogEntry, QuotaTrendPoint, SourceShare,
+    SubscriptionProfile, SubscriptionRecord, TokenUsage, TrendPoint,
 };
 use crate::pricing::{
   calculate_value_usd, display_name_for_model, load_catalog_map, model_color, normalize_model_id,
@@ -24,6 +26,8 @@ use crate::pricing::{
 
 const SQL_SESSIONS: &str = include_str!("../sql/queries/sessions.sql");
 const SQL_SESSIONS_FOR_ROOT: &str = include_str!("../sql/queries/sessions_for_root.sql");
+const SQL_SESSION_SOURCE_MEMBERSHIPS: &str =
+    include_str!("../sql/queries/session_source_memberships.sql");
 const SQL_USAGE_EVENTS: &str = include_str!("../sql/queries/usage_events.sql");
 const SQL_USAGE_EVENTS_FOR_ROOT: &str = include_str!("../sql/queries/usage_events_for_root.sql");
 const SQL_RATE_LIMIT_WINDOWS: &str = include_str!("../sql/queries/rate_limit_windows.sql");
@@ -32,6 +36,8 @@ const SQL_QUOTA_SAMPLES: &str = include_str!("../sql/queries/quota_samples.sql")
 #[derive(Debug, Clone)]
 struct SessionRow {
   session_id: String,
+    source_id: String,
+    source_ids: HashSet<String>,
   root_session_id: String,
   parent_session_id: Option<String>,
   title: String,
@@ -108,12 +114,14 @@ pub fn get_overview(
   custom_end: Option<String>,
   live_rate_limits: Option<LiveRateLimitSnapshot>,
   live_window_offset: Option<i64>,
+    source_ids: Option<Vec<String>>,
 ) -> Result<OverviewResponse, String> {
   let conn = open_connection(db_path).map_err(|error| error.to_string())?;
   let sessions = load_sessions(&conn).map_err(|error| error.to_string())?;
   let events = load_events(&conn).map_err(|error| error.to_string())?;
   let profile = get_subscription_profile(&conn).map_err(|error| error.to_string())?;
-  let subscription_records = list_subscription_records(&conn).map_err(|error| error.to_string())?;
+    let subscription_records =
+        list_subscription_records(&conn).map_err(|error| error.to_string())?;
   let catalog = load_catalog_map(&conn).map_err(|error| error.to_string())?;
   build_overview(
     &conn,
@@ -128,6 +136,7 @@ pub fn get_overview(
     custom_end,
     live_rate_limits,
     live_window_offset,
+        source_ids.as_deref(),
   )
 }
 
@@ -174,7 +183,8 @@ pub fn list_conversations(
   let sessions = load_sessions(&conn).map_err(|error| error.to_string())?;
   let events = load_events(&conn).map_err(|error| error.to_string())?;
   let profile = get_subscription_profile(&conn).map_err(|error| error.to_string())?;
-  let subscription_records = list_subscription_records(&conn).map_err(|error| error.to_string())?;
+    let subscription_records =
+        list_subscription_records(&conn).map_err(|error| error.to_string())?;
   build_conversation_list(
     &conn,
     &sessions,
@@ -195,12 +205,14 @@ pub fn load_dashboard_data(
   search: Option<String>,
   live_rate_limits: Option<LiveRateLimitSnapshot>,
   live_window_offset: Option<i64>,
+    source_ids: Option<Vec<String>>,
 ) -> Result<DashboardData, String> {
   let conn = open_connection(db_path).map_err(|error| error.to_string())?;
   let sessions = load_sessions(&conn).map_err(|error| error.to_string())?;
   let events = load_events(&conn).map_err(|error| error.to_string())?;
   let profile = get_subscription_profile(&conn).map_err(|error| error.to_string())?;
-  let subscription_records = list_subscription_records(&conn).map_err(|error| error.to_string())?;
+    let subscription_records =
+        list_subscription_records(&conn).map_err(|error| error.to_string())?;
   let catalog = load_catalog_map(&conn).map_err(|error| error.to_string())?;
 
   let overview = build_overview(
@@ -216,6 +228,7 @@ pub fn load_dashboard_data(
     custom_end.clone(),
     live_rate_limits.clone(),
     live_window_offset,
+        source_ids.as_deref(),
   )?;
   let conversations = build_conversation_list(
     &conn,
@@ -230,6 +243,7 @@ pub fn load_dashboard_data(
       custom_end,
       search,
       live_window_offset,
+            source_ids,
     }),
     live_rate_limits.as_ref(),
   )?;
@@ -255,14 +269,17 @@ fn build_overview(
   custom_end: Option<String>,
   live_rate_limits: Option<LiveRateLimitSnapshot>,
   live_window_offset: Option<i64>,
+    source_ids: Option<&[String]>,
 ) -> Result<OverviewResponse, String> {
+    let source_filter = normalize_source_filter(source_ids);
+    let source_events = filter_events_by_source(events, sessions, source_filter.as_ref());
   let resolved_window = resolve_window(
     conn,
     bucket,
     anchor,
     custom_start,
     custom_end,
-    events,
+        &source_events,
     profile.billing_anchor_day,
     live_rate_limits.as_ref(),
     live_window_offset,
@@ -270,6 +287,7 @@ fn build_overview(
   let window = &resolved_window.window;
   let filtered_events: Vec<_> = events
     .iter()
+        .filter(|event| event_source_allowed(event, sessions, source_filter.as_ref()))
     .filter(|event| event_in_window(event, window))
     .cloned()
     .collect();
@@ -278,6 +296,8 @@ fn build_overview(
   let mut total_value_usd = 0.0;
   let mut total_tokens = 0i64;
   let mut model_shares: HashMap<String, ModelShareAccumulator> = HashMap::new();
+    let mut source_shares: HashMap<String, SourceShareAccumulator> = HashMap::new();
+    let source_labels = load_source_label_map(conn).map_err(|error| error.to_string())?;
 
   for event in &filtered_events {
     total_value_usd += event.value_usd;
@@ -287,7 +307,17 @@ fn build_overview(
       let model = model_shares.entry(event.model_id.clone()).or_default();
       model.api_value_usd += event.value_usd;
       model.total_tokens += event.total_tokens;
-      model.conversation_ids.insert(session.root_session_id.clone());
+            model
+                .conversation_ids
+                .insert(session.root_session_id.clone());
+
+            let source_id = source_id_for_session(session, source_filter.as_ref());
+            let source = source_shares.entry(source_id).or_default();
+            source.api_value_usd += event.value_usd;
+            source.total_tokens += event.total_tokens;
+            source
+                .conversation_ids
+                .insert(session.root_session_id.clone());
     }
   }
 
@@ -313,6 +343,13 @@ fn build_overview(
     })
     .collect::<Vec<_>>();
   model_breakdown.sort_by(|left, right| right.api_value_usd.total_cmp(&left.api_value_usd));
+    let mut source_breakdown = build_source_breakdown(source_shares, &source_labels);
+    source_breakdown.sort_by(|left, right| {
+        right
+            .api_value_usd
+            .total_cmp(&left.api_value_usd)
+            .then_with(|| right.total_tokens.cmp(&left.total_tokens))
+    });
 
   Ok(OverviewResponse {
     bucket: window.bucket.clone(),
@@ -332,6 +369,7 @@ fn build_overview(
     quota_trend,
     model_shares: model_breakdown,
     composition_shares: composition_breakdown,
+        source_shares: source_breakdown,
     live_rate_limits,
   })
 }
@@ -346,13 +384,15 @@ fn build_conversation_list(
   live_rate_limits: Option<&LiveRateLimitSnapshot>,
 ) -> Result<Vec<ConversationListItem>, String> {
   let filters = filters.unwrap_or_default();
+    let source_filter = normalize_source_filter(filters.source_ids.as_deref());
+    let source_events = filter_events_by_source(events, sessions, source_filter.as_ref());
   let window = resolve_window(
     conn,
     filters.bucket.clone(),
     filters.anchor.clone(),
     filters.custom_start.clone(),
     filters.custom_end.clone(),
-    events,
+        &source_events,
     profile.billing_anchor_day,
     live_rate_limits,
     filters.live_window_offset,
@@ -364,6 +404,9 @@ fn build_conversation_list(
   let mut groups: BTreeMap<String, ConversationAccumulator> = BTreeMap::new();
 
   for session in sessions.values() {
+        if !session_source_allowed(session, source_filter.as_ref()) {
+            continue;
+        }
     let group = groups
       .entry(session.root_session_id.clone())
       .or_insert_with(|| ConversationAccumulator {
@@ -392,6 +435,9 @@ fn build_conversation_list(
   }
 
   for event in events {
+        if !event_source_allowed(event, sessions, source_filter.as_ref()) {
+            continue;
+        }
     if !event_in_window(event, &window) {
       continue;
     }
@@ -468,12 +514,94 @@ fn build_conversation_list(
   Ok(items)
 }
 
-pub fn get_conversation_detail(db_path: &Path, root_session_id: &str) -> Result<ConversationDetail, String> {
+fn normalize_source_filter(source_ids: Option<&[String]>) -> Option<HashSet<String>> {
+    let ids = source_ids?
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .collect::<HashSet<_>>();
+    if ids.is_empty() {
+        None
+    } else {
+        Some(ids)
+    }
+}
+
+fn session_source_allowed(session: &SessionRow, source_filter: Option<&HashSet<String>>) -> bool {
+    source_filter
+        .map(|ids| {
+            session
+                .source_ids
+                .iter()
+                .any(|source_id| ids.contains(source_id))
+        })
+        .unwrap_or(true)
+}
+
+fn source_id_for_session(session: &SessionRow, source_filter: Option<&HashSet<String>>) -> String {
+    if let Some(filter) = source_filter {
+        if filter.contains(&session.source_id) {
+            return session.source_id.clone();
+        }
+        let mut matching_ids = session
+            .source_ids
+            .iter()
+            .filter(|source_id| filter.contains(*source_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        matching_ids.sort();
+        if let Some(source_id) = matching_ids.into_iter().next() {
+            return source_id;
+        }
+    }
+
+    session.source_id.clone()
+}
+
+fn event_source_allowed(
+    event: &EventRow,
+    sessions: &HashMap<String, SessionRow>,
+    source_filter: Option<&HashSet<String>>,
+) -> bool {
+    let Some(session) = sessions.get(&event.session_id) else {
+        return false;
+    };
+    session_source_allowed(session, source_filter)
+}
+
+fn filter_events_by_source(
+    events: &[EventRow],
+    sessions: &HashMap<String, SessionRow>,
+    source_filter: Option<&HashSet<String>>,
+) -> Vec<EventRow> {
+    events
+        .iter()
+        .filter(|event| event_source_allowed(event, sessions, source_filter))
+        .cloned()
+        .collect()
+}
+
+fn load_source_label_map(conn: &Connection) -> rusqlite::Result<HashMap<String, String>> {
+    Ok(list_codex_sources(conn)?
+        .into_iter()
+        .map(|source| (source.id, source.label))
+        .collect())
+}
+
+pub fn get_conversation_detail(
+    db_path: &Path,
+    root_session_id: &str,
+) -> Result<ConversationDetail, String> {
   let conn = open_connection(db_path).map_err(|error| error.to_string())?;
-  let sessions = load_sessions_for_root_session(&conn, root_session_id).map_err(|error| error.to_string())?;
-  let events = load_events_for_root_session(&conn, root_session_id).map_err(|error| error.to_string())?;
-  let subscription_records = list_subscription_records(&conn).map_err(|error| error.to_string())?;
+    let sessions = load_sessions_for_root_session(&conn, root_session_id)
+        .map_err(|error| error.to_string())?;
+    let events =
+        load_events_for_root_session(&conn, root_session_id).map_err(|error| error.to_string())?;
+    let subscription_records =
+        list_subscription_records(&conn).map_err(|error| error.to_string())?;
   let catalog = load_catalog_map(&conn).map_err(|error| error.to_string())?;
+    let source_labels = load_source_label_map(&conn).map_err(|error| error.to_string())?;
 
   let mut conversation_sessions = sessions.values().cloned().collect::<Vec<_>>();
 
@@ -494,6 +622,7 @@ pub fn get_conversation_detail(db_path: &Path, root_session_id: &str) -> Result<
   let mut total_tokens = 0i64;
   let mut total_value_usd = 0.0;
   let mut model_breakdown: HashMap<String, ModelShareAccumulator> = HashMap::new();
+    let mut source_breakdown: HashMap<String, SourceShareAccumulator> = HashMap::new();
   let mut per_session: HashMap<String, ConversationSessionAccumulator> = HashMap::new();
   let mut detail_turns = Vec::new();
   let mut conversation_events = Vec::new();
@@ -548,6 +677,14 @@ pub fn get_conversation_detail(db_path: &Path, root_session_id: &str) -> Result<
     model.total_tokens += event.total_tokens;
     model.conversation_ids.insert(root_session_id.to_string());
 
+        if let Some(session) = sessions.get(&event.session_id) {
+            let source_id = source_id_for_session(session, None);
+            let source = source_breakdown.entry(source_id).or_default();
+            source.api_value_usd += event.value_usd;
+            source.total_tokens += event.total_tokens;
+            source.conversation_ids.insert(root_session_id.to_string());
+        }
+
     if let Some(summary) = per_session.get_mut(&event.session_id) {
       summary.model_ids.insert(event.model_id.clone());
       summary.input_tokens += event.input_tokens;
@@ -567,8 +704,7 @@ pub fn get_conversation_detail(db_path: &Path, root_session_id: &str) -> Result<
     detail_turns.append(&mut turns);
   }
   detail_turns.sort_by(|left, right| {
-    left
-      .last_activity_at
+        left.last_activity_at
       .cmp(&right.last_activity_at)
       .then_with(|| left.session_id.cmp(&right.session_id))
       .then_with(|| left.turn_id.cmp(&right.turn_id))
@@ -612,6 +748,13 @@ pub fn get_conversation_detail(db_path: &Path, root_session_id: &str) -> Result<
     .collect::<Vec<_>>();
   model_breakdown.sort_by(|left, right| right.api_value_usd.total_cmp(&left.api_value_usd));
   let composition_breakdown = build_composition_breakdown(&conversation_events, &catalog);
+    let mut source_breakdown = build_source_breakdown(source_breakdown, &source_labels);
+    source_breakdown.sort_by(|left, right| {
+        right
+            .api_value_usd
+            .total_cmp(&left.api_value_usd)
+            .then_with(|| right.total_tokens.cmp(&left.total_tokens))
+    });
 
   if title.trim().is_empty() {
     title = root_session_id.to_string();
@@ -644,6 +787,7 @@ pub fn get_conversation_detail(db_path: &Path, root_session_id: &str) -> Result<
     turns: detail_turns,
     model_breakdown,
     composition_breakdown,
+        source_breakdown,
   })
 }
 
@@ -676,7 +820,11 @@ fn build_turns_for_session(
       .and_then(Value::as_str)
       .map(ToString::to_string);
 
-    match value.get("type").and_then(Value::as_str).unwrap_or_default() {
+        match value
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+        {
       "turn_context" => {
         if let Some(model) = value
           .get("payload")
@@ -688,9 +836,18 @@ fn build_turns_for_session(
       }
       "event_msg" => {
         let payload = value.get("payload").unwrap_or(&Value::Null);
-        match payload.get("type").and_then(Value::as_str).unwrap_or_default() {
+                match payload
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                {
           "task_started" => {
-            close_active_turn(&mut turns, &mut active_turn_index, timestamp.as_deref(), None);
+                        close_active_turn(
+                            &mut turns,
+                            &mut active_turn_index,
+                            timestamp.as_deref(),
+                            None,
+                        );
             let turn_id = payload.get("turn_id").and_then(Value::as_str);
             start_turn(
               &mut turns,
@@ -758,7 +915,10 @@ fn build_turns_for_session(
               input_tokens: read_i64(total_usage, "input_tokens"),
               cached_input_tokens: read_i64(total_usage, "cached_input_tokens"),
               output_tokens: read_i64(total_usage, "output_tokens"),
-              reasoning_output_tokens: read_i64(total_usage, "reasoning_output_tokens"),
+                            reasoning_output_tokens: read_i64(
+                                total_usage,
+                                "reasoning_output_tokens",
+                            ),
               total_tokens: read_total_tokens(total_usage),
             };
 
@@ -784,8 +944,13 @@ fn build_turns_for_session(
               &mut turn_sequence,
               session.session_id.clone(),
             );
-            let model_id = current_model.clone().unwrap_or_else(|| "unknown".to_string());
-            let value_usd = calculate_value_usd(&delta, resolve_pricing(catalog, &model_id).as_ref());
+                        let model_id = current_model
+                            .clone()
+                            .unwrap_or_else(|| "unknown".to_string());
+                        let value_usd = calculate_value_usd(
+                            &delta,
+                            resolve_pricing(catalog, &model_id).as_ref(),
+                        );
             let turn = &mut turns[turn_index];
             turn.model_ids.insert(model_id);
             turn.input_tokens += delta.input_tokens;
@@ -806,16 +971,19 @@ fn build_turns_for_session(
 
   if let Some(index) = active_turn_index {
     let inferred_status = infer_turn_status(&turns[index]);
-    close_active_turn(&mut turns, &mut active_turn_index, None, Some(inferred_status));
+        close_active_turn(
+            &mut turns,
+            &mut active_turn_index,
+            None,
+            Some(inferred_status),
+        );
   }
 
-  Ok(
-    turns
+    Ok(turns
       .into_iter()
       .filter(|turn| turn.total_tokens > 0)
       .map(|turn| turn.into_point())
-      .collect(),
-  )
+        .collect())
 }
 
 fn filter_replayed_turns_for_session(
@@ -827,8 +995,9 @@ fn filter_replayed_turns_for_session(
 
   for turn in turns {
     let is_real_turn_id = !is_synthetic_turn_id(&turn.turn_id);
-    let is_replayed_duplicate =
-      session.parent_session_id.is_some() && is_real_turn_id && seen_real_turn_ids.contains(&turn.turn_id);
+        let is_replayed_duplicate = session.parent_session_id.is_some()
+            && is_real_turn_id
+            && seen_real_turn_ids.contains(&turn.turn_id);
 
     if is_replayed_duplicate {
       continue;
@@ -845,7 +1014,9 @@ fn filter_replayed_turns_for_session(
 
 fn is_synthetic_turn_id(turn_id: &str) -> bool {
   turn_id.starts_with("turn-")
-    && turn_id[5..].chars().all(|character| character.is_ascii_digit())
+        && turn_id[5..]
+            .chars()
+            .all(|character| character.is_ascii_digit())
 }
 
 fn attach_user_message(
@@ -867,10 +1038,24 @@ fn attach_user_message(
       index
     } else {
       close_active_turn(turns, active_turn_index, timestamp, None);
-      start_turn(turns, active_turn_index, timestamp, None, turn_sequence, session_id)
+            start_turn(
+                turns,
+                active_turn_index,
+                timestamp,
+                None,
+                turn_sequence,
+                session_id,
+            )
     }
   } else {
-    start_turn(turns, active_turn_index, timestamp, None, turn_sequence, session_id)
+        start_turn(
+            turns,
+            active_turn_index,
+            timestamp,
+            None,
+            turn_sequence,
+            session_id,
+        )
   };
 
   if let Some(message) = message {
@@ -891,7 +1076,14 @@ fn attach_assistant_message(
   let turn_index = if let Some(index) = *active_turn_index {
     index
   } else {
-    start_turn(turns, active_turn_index, timestamp, None, turn_sequence, session_id)
+        start_turn(
+            turns,
+            active_turn_index,
+            timestamp,
+            None,
+            turn_sequence,
+            session_id,
+        )
   };
 
   if let Some(message) = message {
@@ -917,7 +1109,14 @@ fn ensure_active_turn(
 ) -> usize {
   match *active_turn_index {
     Some(index) => index,
-    None => start_turn(turns, active_turn_index, timestamp, None, turn_sequence, session_id),
+        None => start_turn(
+            turns,
+            active_turn_index,
+            timestamp,
+            None,
+            turn_sequence,
+            session_id,
+        ),
   }
 }
 
@@ -1045,9 +1244,10 @@ fn read_i64(value: &Value, key: &str) -> i64 {
 }
 
 fn read_total_tokens(value: &Value) -> i64 {
-  value.get("total_tokens").and_then(Value::as_i64).unwrap_or_else(|| {
-    read_i64(value, "input_tokens") + read_i64(value, "output_tokens")
-  })
+    value
+        .get("total_tokens")
+        .and_then(Value::as_i64)
+        .unwrap_or_else(|| read_i64(value, "input_tokens") + read_i64(value, "output_tokens"))
 }
 
 fn build_composition_breakdown(
@@ -1071,9 +1271,10 @@ fn build_composition_breakdown(
     breakdown[0].api_value_usd +=
       ((event.input_tokens - event.cached_input_tokens).max(0) as f64 / 1_000_000.0)
         * pricing.input_price_per_million;
-    breakdown[1].api_value_usd +=
-      (event.cached_input_tokens as f64 / 1_000_000.0) * pricing.cached_input_price_per_million;
-    breakdown[2].api_value_usd += (event.output_tokens as f64 / 1_000_000.0) * pricing.output_price_per_million;
+        breakdown[1].api_value_usd += (event.cached_input_tokens as f64 / 1_000_000.0)
+            * pricing.cached_input_price_per_million;
+        breakdown[2].api_value_usd +=
+            (event.output_tokens as f64 / 1_000_000.0) * pricing.output_price_per_million;
   }
 
   breakdown
@@ -1088,20 +1289,56 @@ fn build_composition_breakdown(
     .collect()
 }
 
+fn build_source_breakdown(
+    source_shares: HashMap<String, SourceShareAccumulator>,
+    labels: &HashMap<String, String>,
+) -> Vec<SourceShare> {
+    source_shares
+        .into_iter()
+        .map(|(source_id, aggregate)| SourceShare {
+            display_name: labels
+                .get(&source_id)
+                .cloned()
+                .unwrap_or_else(|| source_id.clone()),
+            color: source_color(&source_id).to_string(),
+            source_id,
+            api_value_usd: aggregate.api_value_usd,
+            total_tokens: aggregate.total_tokens,
+            conversation_count: aggregate.conversation_ids.len(),
+        })
+        .collect()
+}
+
+fn source_color(source_id: &str) -> &'static str {
+    const COLORS: [&str; 10] = [
+        "#60a5fa", "#ff7f45", "#d946ef", "#ffd166", "#34d399", "#a78bfa", "#f472b6", "#2dd4bf",
+        "#f87171", "#93c5fd",
+    ];
+    let hash = source_id.bytes().fold(0usize, |accumulator, byte| {
+        accumulator.wrapping_mul(31).wrapping_add(byte as usize)
+    });
+    COLORS[hash % COLORS.len()]
+}
+
 fn load_sessions(conn: &Connection) -> rusqlite::Result<HashMap<String, SessionRow>> {
   let mut stmt = conn.prepare(SQL_SESSIONS)?;
   let rows = stmt.query_map([], |row| {
+        let source_id: String = row.get(1)?;
+        let mut source_ids = HashSet::new();
+        source_ids.insert(source_id.clone());
     Ok(SessionRow {
       session_id: row.get(0)?,
-      root_session_id: row.get(1)?,
-      parent_session_id: row.get(2)?,
-      title: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-      source_state: row.get(4)?,
-      source_path: row.get(5)?,
-      started_at: row.get(6)?,
-      updated_at: row.get(7)?,
-      agent_nickname: row.get(8)?,
-      agent_role: row.get(9)?,
+            source_id,
+            source_ids,
+            root_session_id: row.get(2)?,
+            parent_session_id: row.get(3)?,
+            title: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            source_state: row.get(5)?,
+            source_path: row.get(6)?,
+            started_at: row.get(7)?,
+            updated_at: row.get(8)?,
+            agent_nickname: row.get(9)?,
+            agent_role: row.get(10)?,
     })
   })?;
 
@@ -1110,6 +1347,7 @@ fn load_sessions(conn: &Connection) -> rusqlite::Result<HashMap<String, SessionR
     let session = row?;
     sessions.insert(session.session_id.clone(), session);
   }
+    enrich_session_source_memberships(conn, &mut sessions)?;
   Ok(sessions)
 }
 
@@ -1119,17 +1357,22 @@ fn load_sessions_for_root_session(
 ) -> rusqlite::Result<HashMap<String, SessionRow>> {
   let mut stmt = conn.prepare(SQL_SESSIONS_FOR_ROOT)?;
   let rows = stmt.query_map([root_session_id], |row| {
+        let source_id: String = row.get(1)?;
+        let mut source_ids = HashSet::new();
+        source_ids.insert(source_id.clone());
     Ok(SessionRow {
       session_id: row.get(0)?,
-      root_session_id: row.get(1)?,
-      parent_session_id: row.get(2)?,
-      title: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-      source_state: row.get(4)?,
-      source_path: row.get(5)?,
-      started_at: row.get(6)?,
-      updated_at: row.get(7)?,
-      agent_nickname: row.get(8)?,
-      agent_role: row.get(9)?,
+            source_id,
+            source_ids,
+            root_session_id: row.get(2)?,
+            parent_session_id: row.get(3)?,
+            title: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            source_state: row.get(5)?,
+            source_path: row.get(6)?,
+            started_at: row.get(7)?,
+            updated_at: row.get(8)?,
+            agent_nickname: row.get(9)?,
+            agent_role: row.get(10)?,
     })
   })?;
 
@@ -1138,7 +1381,29 @@ fn load_sessions_for_root_session(
     let session = row?;
     sessions.insert(session.session_id.clone(), session);
   }
+    enrich_session_source_memberships(conn, &mut sessions)?;
   Ok(sessions)
+}
+
+fn enrich_session_source_memberships(
+    conn: &Connection,
+    sessions: &mut HashMap<String, SessionRow>,
+) -> rusqlite::Result<()> {
+    if sessions.is_empty() {
+        return Ok(());
+    }
+
+    let mut stmt = conn.prepare(SQL_SESSION_SOURCE_MEMBERSHIPS)?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (session_id, source_id) = row?;
+        if let Some(session) = sessions.get_mut(&session_id) {
+            session.source_ids.insert(source_id);
+        }
+    }
+    Ok(())
 }
 
 fn load_events(conn: &Connection) -> rusqlite::Result<Vec<EventRow>> {
@@ -1162,7 +1427,10 @@ fn load_events(conn: &Connection) -> rusqlite::Result<Vec<EventRow>> {
   rows.collect()
 }
 
-fn load_events_for_root_session(conn: &Connection, root_session_id: &str) -> rusqlite::Result<Vec<EventRow>> {
+fn load_events_for_root_session(
+    conn: &Connection,
+    root_session_id: &str,
+) -> rusqlite::Result<Vec<EventRow>> {
   let mut stmt = conn.prepare(SQL_USAGE_EVENTS_FOR_ROOT)?;
   let rows = stmt.query_map([root_session_id], |row| {
     Ok(EventRow {
@@ -1308,11 +1576,22 @@ fn resolve_live_rate_limit_window(
     .and_then(|snapshot| selected_rate_limit_window(snapshot, bucket))
     .and_then(|active_window| {
       Some(RateLimitWindowSummary {
-        start: normalize_local_timestamp(active_window.window_start.as_deref().and_then(parse_rfc3339_local)?),
-        end: normalize_local_timestamp(active_window.resets_at.as_deref().and_then(parse_rfc3339_local)?),
+                start: normalize_local_timestamp(
+                    active_window
+                        .window_start
+                        .as_deref()
+                        .and_then(parse_rfc3339_local)?,
+                ),
+                end: normalize_local_timestamp(
+                    active_window
+                        .resets_at
+                        .as_deref()
+                        .and_then(parse_rfc3339_local)?,
+                ),
       })
     });
-  let windows = load_live_rate_limit_windows(conn, bucket, current_window).map_err(|error| error.to_string())?;
+    let windows = load_live_rate_limit_windows(conn, bucket, current_window)
+        .map_err(|error| error.to_string())?;
 
   if windows.is_empty() {
     return Err(format!(
@@ -1359,21 +1638,29 @@ fn load_live_rate_limit_windows(
     windows.push(RateLimitWindowSummary { start, end });
   }
 
-  windows.sort_by(|left, right| right.end.cmp(&left.end).then_with(|| right.start.cmp(&left.start)));
+    windows.sort_by(|left, right| {
+        right
+            .end
+            .cmp(&left.end)
+            .then_with(|| right.start.cmp(&left.start))
+    });
 
   let mut ordered = Vec::new();
   let mut cursor = current_window.or_else(|| windows.first().cloned());
   while let Some(window) = cursor {
-    if !ordered
-      .iter()
-      .any(|existing: &RateLimitWindowSummary| existing.start == window.start && existing.end == window.end)
-    {
+        if !ordered.iter().any(|existing: &RateLimitWindowSummary| {
+            existing.start == window.start && existing.end == window.end
+        }) {
       ordered.push(window.clone());
     }
     cursor = windows
       .iter()
       .filter(|candidate| candidate.end <= window.start)
-      .max_by(|left, right| left.end.cmp(&right.end).then_with(|| left.start.cmp(&right.start)))
+            .max_by(|left, right| {
+                left.end
+                    .cmp(&right.end)
+                    .then_with(|| left.start.cmp(&right.start))
+            })
       .cloned();
   }
 
@@ -1433,7 +1720,9 @@ fn build_quota_trend(
     }
   }
   samples.sort_by_key(|sample| sample.timestamp);
-  samples.dedup_by(|right, left| right.timestamp == left.timestamp && right.used_percent == left.used_percent);
+    samples.dedup_by(|right, left| {
+        right.timestamp == left.timestamp && right.used_percent == left.used_percent
+    });
 
   let bins = build_elapsed_bins(window, window.end);
   let mut trend = Vec::new();
@@ -1522,7 +1811,9 @@ fn build_bins(window: &Window) -> Vec<TrendBin> {
       "five_hour" => current + chrono::Duration::minutes(15),
       "week" | "subscription_month" | "month" => current + chrono::Duration::days(1),
       "seven_day" => current + chrono::Duration::hours(1),
-      "custom" if custom_window_uses_hourly_bins(window) => current + chrono::Duration::hours(1),
+            "custom" if custom_window_uses_hourly_bins(window) => {
+                current + chrono::Duration::hours(1)
+            }
       "custom" if custom_window_uses_monthly_bins(window) => {
         let current_date = current.date_naive();
         let next_date = add_months(current_date, 1);
@@ -1540,8 +1831,12 @@ fn build_bins(window: &Window) -> Vec<TrendBin> {
     let label = match window.bucket.as_str() {
       "day" | "five_hour" => current.format("%H:%M").to_string(),
       "seven_day" => current.format("%b %d %H:%M").to_string(),
-      "custom" if custom_window_uses_hourly_bins(window) => current.format("%H:%M").to_string(),
-      "custom" if custom_window_uses_monthly_bins(window) => current.format("%b %Y").to_string(),
+            "custom" if custom_window_uses_hourly_bins(window) => {
+                current.format("%H:%M").to_string()
+            }
+            "custom" if custom_window_uses_monthly_bins(window) => {
+                current.format("%b %Y").to_string()
+            }
       "year" | "total" => current.format("%b %Y").to_string(),
       _ => current.format("%b %d").to_string(),
     };
@@ -1656,11 +1951,12 @@ fn load_quota_samples(conn: &Connection, window: &Window) -> Vec<QuotaSample> {
   let target_start = normalize_local_timestamp(window.start);
   let target_end = normalize_local_timestamp(window.end);
 
-  rows
-    .filter_map(Result::ok)
+    rows.filter_map(Result::ok)
     .filter_map(|(timestamp, used_percent, window_start, resets_at)| {
-      let sample_window_start = parse_rfc3339_local(&window_start).map(normalize_local_timestamp)?;
-      let sample_window_end = parse_rfc3339_local(&resets_at).map(normalize_local_timestamp)?;
+            let sample_window_start =
+                parse_rfc3339_local(&window_start).map(normalize_local_timestamp)?;
+            let sample_window_end =
+                parse_rfc3339_local(&resets_at).map(normalize_local_timestamp)?;
       if sample_window_start != target_start || sample_window_end != target_end {
         return None;
       }
@@ -1672,7 +1968,10 @@ fn load_quota_samples(conn: &Connection, window: &Window) -> Vec<QuotaSample> {
     .collect()
 }
 
-fn live_snapshot_cutoff(live_rate_limits: &LiveRateLimitSnapshot, window: &Window) -> Option<DateTime<Local>> {
+fn live_snapshot_cutoff(
+    live_rate_limits: &LiveRateLimitSnapshot,
+    window: &Window,
+) -> Option<DateTime<Local>> {
   let active_window = selected_rate_limit_window(live_rate_limits, &window.bucket)?;
   let live_start = active_window
     .window_start
@@ -1684,7 +1983,9 @@ fn live_snapshot_cutoff(live_rate_limits: &LiveRateLimitSnapshot, window: &Windo
     .as_deref()
     .and_then(parse_rfc3339_local)
     .map(normalize_local_timestamp)?;
-  if live_start != normalize_local_timestamp(window.start) || live_end != normalize_local_timestamp(window.end) {
+    if live_start != normalize_local_timestamp(window.start)
+        || live_end != normalize_local_timestamp(window.end)
+    {
     return None;
   }
   parse_rfc3339_local(&live_rate_limits.fetched_at).map(|timestamp| timestamp.min(window.end))
@@ -1698,7 +1999,8 @@ fn normalize_local_timestamp(timestamp: DateTime<Local>) -> DateTime<Local> {
 }
 
 fn billing_cycle_start(anchor_date: NaiveDate, billing_anchor_day: u32) -> NaiveDate {
-  let this_month_anchor = anchored_date(anchor_date.year(), anchor_date.month(), billing_anchor_day);
+    let this_month_anchor =
+        anchored_date(anchor_date.year(), anchor_date.month(), billing_anchor_day);
   if anchor_date >= this_month_anchor {
     this_month_anchor
   } else {
@@ -1721,9 +2023,11 @@ fn anchored_date(year: i32, month: u32, billing_anchor_day: u32) -> NaiveDate {
 
 fn add_months(date: NaiveDate, months: i32) -> NaiveDate {
   if months >= 0 {
-    date.checked_add_months(Months::new(months as u32)).unwrap_or(date)
+        date.checked_add_months(Months::new(months as u32))
+            .unwrap_or(date)
   } else {
-    date.checked_sub_months(Months::new((-months) as u32)).unwrap_or(date)
+        date.checked_sub_months(Months::new((-months) as u32))
+            .unwrap_or(date)
   }
 }
 
@@ -1741,12 +2045,15 @@ fn parse_rfc3339_local(value: &str) -> Option<DateTime<Local>> {
 fn local_midnight(date: NaiveDate) -> Result<DateTime<Local>, String> {
   let naive = NaiveDateTime::new(
     date,
-    chrono::NaiveTime::from_hms_opt(0, 0, 0).ok_or_else(|| "Invalid local midnight.".to_string())?,
+        chrono::NaiveTime::from_hms_opt(0, 0, 0)
+            .ok_or_else(|| "Invalid local midnight.".to_string())?,
   );
   match Local.from_local_datetime(&naive) {
     LocalResult::Single(value) => Ok(value),
     LocalResult::Ambiguous(first, _) => Ok(first),
-    LocalResult::None => Err("Could not localize midnight in the current timezone.".to_string()),
+        LocalResult::None => {
+            Err("Could not localize midnight in the current timezone.".to_string())
+        }
   }
 }
 
@@ -1779,6 +2086,13 @@ struct ModelShareAccumulator {
   api_value_usd: f64,
   total_tokens: i64,
   conversation_ids: HashSet<String>,
+}
+
+#[derive(Debug, Default)]
+struct SourceShareAccumulator {
+    api_value_usd: f64,
+    total_tokens: i64,
+    conversation_ids: HashSet<String>,
 }
 
 #[derive(Debug)]
@@ -1915,6 +2229,8 @@ mod tests {
     let turns = build_turns_for_session(
       &SessionRow {
         session_id: "session-1".to_string(),
+                source_id: "local".to_string(),
+                source_ids: HashSet::from(["local".to_string()]),
         root_session_id: "session-1".to_string(),
         parent_session_id: None,
         title: String::new(),
@@ -1960,6 +2276,8 @@ mod tests {
     let turns = build_turns_for_session(
       &SessionRow {
         session_id: "session-2".to_string(),
+                source_id: "local".to_string(),
+                source_ids: HashSet::from(["local".to_string()]),
         root_session_id: "session-2".to_string(),
         parent_session_id: None,
         title: String::new(),
@@ -1995,6 +2313,8 @@ mod tests {
   fn child_session_turns_drop_replayed_parent_turn_ids() {
     let root_session = SessionRow {
       session_id: "root-session".to_string(),
+            source_id: "local".to_string(),
+            source_ids: HashSet::from(["local".to_string()]),
       root_session_id: "root-session".to_string(),
       parent_session_id: None,
       title: String::new(),
@@ -2007,6 +2327,8 @@ mod tests {
     };
     let child_session = SessionRow {
       session_id: "child-session".to_string(),
+            source_id: "local".to_string(),
+            source_ids: HashSet::from(["local".to_string()]),
       root_session_id: "root-session".to_string(),
       parent_session_id: Some("root-session".to_string()),
       title: String::new(),
@@ -2074,8 +2396,11 @@ mod tests {
     };
 
     let mut seen_real_turn_ids = HashSet::new();
-    let root_filtered =
-      filter_replayed_turns_for_session(&root_session, vec![root_turn.clone()], &mut seen_real_turn_ids);
+        let root_filtered = filter_replayed_turns_for_session(
+            &root_session,
+            vec![root_turn.clone()],
+            &mut seen_real_turn_ids,
+        );
     let child_filtered = filter_replayed_turns_for_session(
       &child_session,
       vec![replayed_root_turn, child_turn.clone()],
@@ -2091,6 +2416,8 @@ mod tests {
   fn synthetic_turn_ids_are_not_deduped_across_sessions() {
     let root_session = SessionRow {
       session_id: "root-session".to_string(),
+            source_id: "local".to_string(),
+            source_ids: HashSet::from(["local".to_string()]),
       root_session_id: "root-session".to_string(),
       parent_session_id: None,
       title: String::new(),
@@ -2103,6 +2430,8 @@ mod tests {
     };
     let child_session = SessionRow {
       session_id: "child-session".to_string(),
+            source_id: "local".to_string(),
+            source_ids: HashSet::from(["local".to_string()]),
       root_session_id: "root-session".to_string(),
       parent_session_id: Some("root-session".to_string()),
       title: String::new(),
@@ -2152,10 +2481,16 @@ mod tests {
     };
 
     let mut seen_real_turn_ids = HashSet::new();
-    let root_filtered =
-      filter_replayed_turns_for_session(&root_session, vec![root_turn], &mut seen_real_turn_ids);
-    let child_filtered =
-      filter_replayed_turns_for_session(&child_session, vec![child_turn], &mut seen_real_turn_ids);
+        let root_filtered = filter_replayed_turns_for_session(
+            &root_session,
+            vec![root_turn],
+            &mut seen_real_turn_ids,
+        );
+        let child_filtered = filter_replayed_turns_for_session(
+            &child_session,
+            vec![child_turn],
+            &mut seen_real_turn_ids,
+        );
 
     assert_eq!(root_filtered.len(), 1);
     assert_eq!(child_filtered.len(), 1);
@@ -2179,8 +2514,14 @@ mod tests {
     .expect("resolve window");
 
     assert_eq!(window.window.anchor, "2026-03-23");
-    assert_eq!(window.window.start.date_naive(), NaiveDate::from_ymd_opt(2026, 3, 23).unwrap());
-    assert_eq!(window.window.end.date_naive(), NaiveDate::from_ymd_opt(2026, 4, 23).unwrap());
+        assert_eq!(
+            window.window.start.date_naive(),
+            NaiveDate::from_ymd_opt(2026, 3, 23).unwrap()
+        );
+        assert_eq!(
+            window.window.end.date_naive(),
+            NaiveDate::from_ymd_opt(2026, 4, 23).unwrap()
+        );
   }
 
   #[test]
@@ -2201,8 +2542,14 @@ mod tests {
     .expect("resolve window");
 
     assert_eq!(window.window.anchor, "2026-02-23");
-    assert_eq!(window.window.start.date_naive(), NaiveDate::from_ymd_opt(2026, 2, 23).unwrap());
-    assert_eq!(window.window.end.date_naive(), NaiveDate::from_ymd_opt(2026, 3, 23).unwrap());
+        assert_eq!(
+            window.window.start.date_naive(),
+            NaiveDate::from_ymd_opt(2026, 2, 23).unwrap()
+        );
+        assert_eq!(
+            window.window.end.date_naive(),
+            NaiveDate::from_ymd_opt(2026, 3, 23).unwrap()
+        );
   }
 
   #[test]
@@ -2224,8 +2571,14 @@ mod tests {
 
     assert_eq!(window.window.bucket, "custom");
     assert_eq!(window.window.anchor, "2026-04-10");
-    assert_eq!(window.window.start.date_naive(), NaiveDate::from_ymd_opt(2026, 4, 10).unwrap());
-    assert_eq!(window.window.end.date_naive(), NaiveDate::from_ymd_opt(2026, 4, 13).unwrap());
+        assert_eq!(
+            window.window.start.date_naive(),
+            NaiveDate::from_ymd_opt(2026, 4, 10).unwrap()
+        );
+        assert_eq!(
+            window.window.end.date_naive(),
+            NaiveDate::from_ymd_opt(2026, 4, 13).unwrap()
+        );
   }
 
   #[test]
@@ -2356,14 +2709,27 @@ mod tests {
       secondary: None,
       fetched_at: "2026-03-26T14:33:00+08:00".to_string(),
     };
-    insert_live_rate_limit_snapshot(&conn, &live_rate_limits).expect("insert live rate limit snapshot");
+        insert_live_rate_limit_snapshot(&conn, &live_rate_limits)
+            .expect("insert live rate limit snapshot");
 
-    let window =
-      resolve_window(&conn, Some("five_hour".to_string()), None, None, None, &[], 1, Some(&live_rate_limits), None)
+        let window = resolve_window(
+            &conn,
+            Some("five_hour".to_string()),
+            None,
+            None,
+            None,
+            &[],
+            1,
+            Some(&live_rate_limits),
+            None,
+        )
         .expect("resolve live window");
 
     assert_eq!(window.window.anchor, "2026-03-26");
-    assert_eq!(window.window.start.to_rfc3339(), "2026-03-26T11:27:00+08:00");
+        assert_eq!(
+            window.window.start.to_rfc3339(),
+            "2026-03-26T11:27:00+08:00"
+        );
     assert_eq!(window.window.end.to_rfc3339(), "2026-03-26T16:27:00+08:00");
   }
 
@@ -2403,13 +2769,25 @@ mod tests {
     insert_live_rate_limit_snapshot(&conn, &previous).expect("insert previous live window");
     insert_live_rate_limit_snapshot(&conn, &current).expect("insert current live window");
 
-    let window =
-      resolve_window(&conn, Some("five_hour".to_string()), None, None, None, &[], 1, Some(&current), Some(1))
+        let window = resolve_window(
+            &conn,
+            Some("five_hour".to_string()),
+            None,
+            None,
+            None,
+            &[],
+            1,
+            Some(&current),
+            Some(1),
+        )
         .expect("resolve historical live window");
 
     assert_eq!(window.live_window_offset, 1);
     assert!(window.live_window_count >= 2);
-    assert_eq!(window.window.start.to_rfc3339(), "2026-03-26T06:27:00+08:00");
+        assert_eq!(
+            window.window.start.to_rfc3339(),
+            "2026-03-26T06:27:00+08:00"
+        );
     assert_eq!(window.window.end.to_rfc3339(), "2026-03-26T11:27:00+08:00");
   }
 }

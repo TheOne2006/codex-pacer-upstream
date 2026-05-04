@@ -92,6 +92,7 @@ export type TranslationSet = {
     distribution: string
     modelShare: string
     costStructure: string
+    sourceShare: string
   }
   conversationList: {
     eyebrow: string
@@ -104,6 +105,7 @@ export type TranslationSet = {
     modelBreakdown: string
     conversationModelBreakdown: string
     conversationCostBreakdown: string
+    conversationSourceBreakdown: string
     turnTimelineEyebrow: string
     turnUsage: string
     latestTurns: (count: number) => string
@@ -126,6 +128,7 @@ export type TranslationSet = {
     metricControlLabel: string
     byModel: string
     byStructure: string
+    bySource: string
     byValue: string
     byTokens: string
     liveQuotaEyebrow: string
@@ -137,6 +140,45 @@ export type TranslationSet = {
     remaining: string
     cumulativeValue: string
     windowValue: string
+  }
+  sources: {
+    label: string
+    remoteSources: string
+    chooseSources: string
+    noneSelected: string
+    listSeparator: string
+    local: string
+    localCodexHome: string
+    cached: string
+    added: string
+    failed: string
+    downloading: string
+    notDownloaded: string
+    addSsh: string
+    updateAll: string
+    noRemoteSources: string
+    update: string
+    updating: string
+    deleteSource: string
+    deleteSourceLabel: (label: string) => string
+    deleting: string
+    deleteServer: string
+    deleteServerTitle: (label: string) => string
+    deleteServerDescription: string
+    confirmDelete: string
+    addCodexServer: string
+    refreshSshList: string
+    filteredHostsNote: string
+    noSshServersDiscovered: string
+    add: string
+    keepOneSelected: string
+    addedSource: (label: string) => string
+    downloadingRemoteCache: string
+    downloadedAndImported: (files: number) => string
+    noSshServersAdded: string
+    deletingSource: (label: string) => string
+    deletedSource: (label: string) => string
+    maintenanceActions: string
   }
   popup: {
     title: string
@@ -362,6 +404,7 @@ const translations: Record<AppLanguage, TranslationSet> = {
       distribution: '分布',
       modelShare: '模型占比',
       costStructure: '成本结构',
+      sourceShare: '数据源占比',
     },
     conversationList: {
       eyebrow: '对话列表',
@@ -374,6 +417,7 @@ const translations: Record<AppLanguage, TranslationSet> = {
       modelBreakdown: '模型分布',
       conversationModelBreakdown: '对话模型分布',
       conversationCostBreakdown: '对话成本结构',
+      conversationSourceBreakdown: '对话数据源分布',
       turnTimelineEyebrow: 'Turn 时间线',
       turnUsage: 'Turn 用量',
       latestTurns: (count) => `最近 ${count} 个 turn`,
@@ -396,6 +440,7 @@ const translations: Record<AppLanguage, TranslationSet> = {
       metricControlLabel: '分布指标',
       byModel: '按模型',
       byStructure: '按结构',
+      bySource: '按数据源',
       byValue: '按价值',
       byTokens: '按 tokens',
       liveQuotaEyebrow: 'Live quota',
@@ -407,6 +452,45 @@ const translations: Record<AppLanguage, TranslationSet> = {
       remaining: '剩余',
       cumulativeValue: '累积价值',
       windowValue: '窗口价值',
+    },
+    sources: {
+      label: '数据源',
+      remoteSources: '远程数据源',
+      chooseSources: '选择要纳入统计的数据源',
+      noneSelected: '未选择',
+      listSeparator: '、',
+      local: '本机',
+      localCodexHome: '本机 ~/.codex',
+      cached: '已缓存',
+      added: '已添加',
+      failed: '失败',
+      downloading: '下载中',
+      notDownloaded: '未下载',
+      addSsh: '添加 SSH',
+      updateAll: '更新全部',
+      noRemoteSources: '还没有远程数据源。',
+      update: '更新',
+      updating: '更新中',
+      deleteSource: '删除数据源',
+      deleteSourceLabel: (label) => `删除 ${label}`,
+      deleting: '删除中…',
+      deleteServer: '删除服务器',
+      deleteServerTitle: (label) => `删除 ${label}？`,
+      deleteServerDescription: '这会移除这个 SSH 数据源、本地缓存和已导入的统计数据。不会影响远程服务器上的 ~/.codex。',
+      confirmDelete: '确认删除',
+      addCodexServer: '添加 Codex 服务器',
+      refreshSshList: '刷新 SSH 列表',
+      filteredHostsNote: '自动过滤 GitHub / GitLab 等代码托管 Host。',
+      noSshServersDiscovered: '没有发现可添加的 SSH 服务器。',
+      add: '添加',
+      keepOneSelected: '至少保留一个数据源。',
+      addedSource: (label) => `已添加 ${label}`,
+      downloadingRemoteCache: '正在下载远程缓存…',
+      downloadedAndImported: (files) => `已下载并导入 ${files} 个文件`,
+      noSshServersAdded: '还没有添加 SSH 服务器。',
+      deletingSource: (label) => `正在删除 ${label}…`,
+      deletedSource: (label) => `已删除 ${label}`,
+      maintenanceActions: '维护操作',
     },
     popup: {
       title: '托盘',
@@ -625,6 +709,7 @@ const translations: Record<AppLanguage, TranslationSet> = {
       distribution: 'Distribution',
       modelShare: 'Model share',
       costStructure: 'Cost structure',
+      sourceShare: 'Source share',
     },
     conversationList: {
       eyebrow: 'Conversation list',
@@ -637,6 +722,7 @@ const translations: Record<AppLanguage, TranslationSet> = {
       modelBreakdown: 'Model breakdown',
       conversationModelBreakdown: 'Conversation model breakdown',
       conversationCostBreakdown: 'Conversation cost structure',
+      conversationSourceBreakdown: 'Conversation source breakdown',
       turnTimelineEyebrow: 'Turn timeline',
       turnUsage: 'Turn usage',
       latestTurns: (count) => `Latest ${count} turns`,
@@ -659,6 +745,7 @@ const translations: Record<AppLanguage, TranslationSet> = {
       metricControlLabel: 'Distribution metric',
       byModel: 'By model',
       byStructure: 'By structure',
+      bySource: 'By source',
       byValue: 'By value',
       byTokens: 'By tokens',
       liveQuotaEyebrow: 'Live quota',
@@ -670,6 +757,45 @@ const translations: Record<AppLanguage, TranslationSet> = {
       remaining: 'Remaining',
       cumulativeValue: 'Cumulative value',
       windowValue: 'Window value',
+    },
+    sources: {
+      label: 'Sources',
+      remoteSources: 'Remote sources',
+      chooseSources: 'Choose sources for this view',
+      noneSelected: 'None selected',
+      listSeparator: ', ',
+      local: 'Local',
+      localCodexHome: 'Local ~/.codex',
+      cached: 'Cached',
+      added: 'Added',
+      failed: 'Failed',
+      downloading: 'Downloading',
+      notDownloaded: 'Not downloaded',
+      addSsh: 'Add SSH',
+      updateAll: 'Update all',
+      noRemoteSources: 'No remote sources yet.',
+      update: 'Update',
+      updating: 'Updating',
+      deleteSource: 'Delete source',
+      deleteSourceLabel: (label) => `Delete ${label}`,
+      deleting: 'Deleting…',
+      deleteServer: 'Delete server',
+      deleteServerTitle: (label) => `Delete ${label}?`,
+      deleteServerDescription: 'This removes the SSH source, its local cache, and imported stats. The remote ~/.codex is not changed.',
+      confirmDelete: 'Delete',
+      addCodexServer: 'Add Codex server',
+      refreshSshList: 'Refresh SSH list',
+      filteredHostsNote: 'GitHub/GitLab-style hosts are filtered automatically.',
+      noSshServersDiscovered: 'No SSH servers discovered.',
+      add: 'Add',
+      keepOneSelected: 'Keep at least one source selected.',
+      addedSource: (label) => `Added ${label}`,
+      downloadingRemoteCache: 'Downloading remote cache…',
+      downloadedAndImported: (files) => `Downloaded and imported ${files} files`,
+      noSshServersAdded: 'No SSH servers added yet.',
+      deletingSource: (label) => `Deleting ${label}…`,
+      deletedSource: (label) => `Deleted ${label}`,
+      maintenanceActions: 'Maintenance actions',
     },
     popup: {
       title: 'Tray',

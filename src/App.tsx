@@ -14,14 +14,21 @@ import {
 
 import {
   createSubscriptionRecord,
+  deleteCodexSource,
   deleteSubscriptionRecord,
+  discoverSshCodexSources,
+  downloadCodexSource,
   getScanInProgress,
   getConversationDetail,
   getLiveRateLimits,
+  listCodexSources,
   listSubscriptionRecords,
   loadDashboard,
   refreshPricing,
+  scanCodexSources,
   scanCodexUsage,
+  setCodexSourceSelected,
+  upsertCodexSource,
   updateSubscriptionRecord,
   updateSubscriptionProfile,
   updateSyncSettings,
@@ -40,6 +47,9 @@ import type { TranslationSet } from './app/i18n'
 import { useI18n } from './app/useI18n'
 import type {
   AppView,
+  CodexSource,
+  CodexSourceCandidate,
+  CodexSourceInput,
   CompositionShare,
   ConversationDetail,
   ConversationListItem,
@@ -52,6 +62,7 @@ import type {
   ShareDimension,
   ShareMode,
   ShareSlice,
+  SourceShare,
   SubscriptionProfile,
   SubscriptionRecord,
   SubscriptionRecordInput,
@@ -61,6 +72,14 @@ import { ModelShareChart } from './components/ModelShareChart'
 import { QuotaTrendChart } from './components/QuotaTrendChart'
 import { SettingsPanel } from './components/SettingsPanel'
 import { TrendChart } from './components/TrendChart'
+import {
+  SidebarSourceManager,
+  SourceAddModal,
+  SourceDeleteDialog,
+  SourceManagerModal,
+  SourceSelectorPanel,
+  upsertSourceInList,
+} from './features/sources'
 
 const MENU_BAR_POPUP_WINDOW_LABEL = 'menu-bar-popup'
 const MENU_BAR_POPUP_REFRESH_EVENT = 'codex-counter://menu-bar-popup-refresh'
@@ -95,6 +114,17 @@ function App() {
   const [detail, setDetail] = useState<ConversationDetail | null>(null)
   const [syncSettings, setSyncSettings] = useState<SyncSettings | null>(null)
   const [subscriptionProfile, setSubscriptionProfile] = useState<SubscriptionProfile | null>(null)
+  const [codexSources, setCodexSources] = useState<CodexSource[]>([])
+  const [sourcePanelOpen, setSourcePanelOpen] = useState(false)
+  const [sourceManagerOpen, setSourceManagerOpen] = useState(false)
+  const [sourceModalOpen, setSourceModalOpen] = useState(false)
+  const [sourceCandidates, setSourceCandidates] = useState<CodexSourceCandidate[]>([])
+  const [sourceSelectionMessage, setSourceSelectionMessage] = useState('')
+  const [sourceManagerMessage, setSourceManagerMessage] = useState('')
+  const [sourceModalMessage, setSourceModalMessage] = useState('')
+  const [downloadingSourceIds, setDownloadingSourceIds] = useState<Set<string>>(() => new Set())
+  const [deletingSourceIds, setDeletingSourceIds] = useState<Set<string>>(() => new Set())
+  const [pendingDeleteSource, setPendingDeleteSource] = useState<CodexSource | null>(null)
   const [subscriptionRecords, setSubscriptionRecords] = useState<SubscriptionRecord[]>([])
   const [liveRateLimits, setLiveRateLimits] = useState<LiveRateLimitSnapshot | null>(null)
   const [loadedQueryKey, setLoadedQueryKey] = useState<string | null>(null)
@@ -111,6 +141,8 @@ function App() {
   const detailCacheRef = useRef(new Map<string, ConversationDetail>())
   const latestDetailRequestIdRef = useRef(0)
   const [hasBootstrapped, setHasBootstrapped] = useState(false)
+  const selectedSourceIds = codexSources.filter((source) => source.selected).map((source) => source.id)
+  const sourceSelectionKey = selectedSourceIds.join(',')
 
   const waitForScanToSettle = useCallback(async () => {
     const startedAt = Date.now()
@@ -135,6 +167,9 @@ function App() {
     const requestCustomEnd = requestBucket === 'custom' ? customEnd : null
     const requestSearch = deferredSearch || null
     const requestLiveWindowOffset = requestBucket === 'five_hour' || requestBucket === 'seven_day' ? liveWindowOffset : 0
+    const requestSourceIds = codexSources.filter((source) => source.selected).map((source) => source.id)
+    const requestDashboardSourceIds = requestSourceIds.length > 0 ? requestSourceIds : null
+    const requestSourceSelectionKey = requestSourceIds.join(',')
     lastRequestedQueryKeyRef.current = buildQueryKey(
       requestBucket,
       requestAnchor,
@@ -142,6 +177,7 @@ function App() {
       requestCustomEnd,
       requestSearch,
       requestLiveWindowOffset,
+      requestSourceSelectionKey,
     )
     setIsBusy(true)
     if ((requestBucket === 'five_hour' || requestBucket === 'seven_day') && requestLiveWindowOffset === 0) {
@@ -150,8 +186,12 @@ function App() {
     try {
       if (requestScan) {
         try {
-          const scan = await scanCodexUsage(syncSettingsRef.current?.codexHome ?? null)
-          setStatusMessage(t.status.scannedFiles(scan.scannedFiles, scan.updatedSessions))
+          const scans = codexSources.length > 0
+            ? await scanCodexSources(requestDashboardSourceIds)
+            : [await scanCodexUsage(syncSettingsRef.current?.codexHome ?? null)]
+          const scannedFiles = scans.reduce((sum, scan) => sum + scan.scannedFiles, 0)
+          const updatedSessions = scans.reduce((sum, scan) => sum + scan.updatedSessions, 0)
+          setStatusMessage(t.status.scannedFiles(scannedFiles, updatedSessions))
         } catch (error) {
           const message = String(error)
           if (!message.includes('already running')) {
@@ -167,6 +207,7 @@ function App() {
         requestAnchor,
         requestSearch,
         requestLiveWindowOffset,
+        requestDashboardSourceIds,
         requestCustomStart,
         requestCustomEnd,
       )
@@ -187,6 +228,7 @@ function App() {
         setConversations(snapshot.conversations)
         setSyncSettings(snapshot.syncSettings)
         setSubscriptionProfile(snapshot.subscriptionProfile)
+        setCodexSources(snapshot.codexSources)
         setSubscriptionRecords(snapshot.subscriptionRecords)
         setLiveRateLimits(snapshot.liveRateLimits)
         detailCacheRef.current = nextDetailCache
@@ -200,6 +242,7 @@ function App() {
             requestCustomEnd,
             requestSearch,
             snapshot.overview.liveWindowOffset,
+            requestSourceSelectionKey,
           ),
         )
         setSelectedRootSessionId((current) =>
@@ -221,7 +264,7 @@ function App() {
         setIsBusy(false)
       }
     }
-  }, [anchor, bucket, customEnd, customStart, deferredSearch, liveWindowOffset, t, waitForScanToSettle])
+  }, [anchor, bucket, codexSources, customEnd, customStart, deferredSearch, liveWindowOffset, t, waitForScanToSettle])
 
   const currentQueryKey = buildQueryKey(
     bucket,
@@ -230,6 +273,7 @@ function App() {
     bucket === 'custom' ? customEnd : null,
     deferredSearch || null,
     bucket === 'five_hour' || bucket === 'seven_day' ? liveWindowOffset : 0,
+    sourceSelectionKey,
   )
 
   useEffect(() => {
@@ -387,6 +431,151 @@ function App() {
     }
   }
 
+  async function refreshCodexSources() {
+    try {
+      const nextSources = await listCodexSources()
+      setCodexSources(nextSources)
+    } catch (error) {
+      setSourceManagerMessage(String(error))
+    }
+  }
+
+  async function handleToggleSource(source: CodexSource, selected: boolean) {
+    if (!selected && codexSources.filter((item) => item.selected).length <= 1) {
+      setSourceSelectionMessage(t.sources.keepOneSelected)
+      return
+    }
+    try {
+      const updated = await setCodexSourceSelected(source.id, selected)
+      setCodexSources((current) => current.map((item) => (item.id === updated.id ? updated : item)))
+      setSourceSelectionMessage('')
+      detailCacheRef.current.clear()
+      await loadShell(false)
+    } catch (error) {
+      setSourceSelectionMessage(String(error))
+    }
+  }
+
+  async function handleOpenSourceModal() {
+    setSourceModalOpen(true)
+    setSourceModalMessage('')
+    try {
+      const [candidates, sources] = await Promise.all([discoverSshCodexSources(), listCodexSources()])
+      setSourceCandidates(candidates)
+      setCodexSources(sources)
+    } catch (error) {
+      setSourceModalMessage(String(error))
+    }
+  }
+
+  async function handleDiscoverSources() {
+    setSourceModalMessage('')
+    try {
+      setSourceCandidates(await discoverSshCodexSources())
+    } catch (error) {
+      setSourceModalMessage(String(error))
+    }
+  }
+
+  async function handleAddSource(candidate: CodexSourceCandidate) {
+    const payload: CodexSourceInput = {
+      label: candidate.label,
+      sshAlias: candidate.sshAlias,
+      hostName: candidate.hostName,
+      user: candidate.user,
+      port: candidate.port,
+      remoteCodexHome: candidate.remoteCodexHome || '~/.codex',
+      selected: true,
+    }
+    try {
+      const saved = await upsertCodexSource(payload)
+      setCodexSources((current) => upsertSourceInList(current, saved))
+      setSourceModalMessage(t.sources.addedSource(saved.label))
+    } catch (error) {
+      setSourceModalMessage(String(error))
+    }
+  }
+
+  async function handleDownloadSource(sourceId: string) {
+    setDownloadingSourceIds((current) => new Set(current).add(sourceId))
+    setSourceManagerMessage(t.sources.downloadingRemoteCache)
+    try {
+      const result = await downloadCodexSource(sourceId)
+      setCodexSources((current) => upsertSourceInList(current, result.source))
+      detailCacheRef.current.clear()
+      await loadShell(false)
+      setSourceManagerMessage(t.sources.downloadedAndImported(result.scanResult.scannedFiles))
+      if (isTauri()) {
+        await emitTo(MENU_BAR_POPUP_WINDOW_LABEL, MENU_BAR_POPUP_REFRESH_EVENT, {}).catch(() => {})
+      }
+    } catch (error) {
+      setSourceManagerMessage(String(error))
+      await refreshCodexSources()
+    } finally {
+      setDownloadingSourceIds((current) => {
+        const next = new Set(current)
+        next.delete(sourceId)
+        return next
+      })
+    }
+  }
+
+  async function handleDownloadAllSources() {
+    const remoteSources = codexSources.filter((source) => source.kind === 'ssh')
+    if (remoteSources.length === 0) {
+      setSourceManagerMessage(t.sources.noSshServersAdded)
+      await handleOpenSourceModal()
+      return
+    }
+
+    for (const source of remoteSources) {
+      // Sequential by design: avoids concurrent SSH/tar imports racing over the same database.
+      await handleDownloadSource(source.id)
+    }
+  }
+
+  async function handleDeleteSource(source: CodexSource) {
+    if (source.kind !== 'ssh') {
+      return
+    }
+    if (source.selected && codexSources.filter((item) => item.selected && item.id !== source.id).length === 0) {
+      setSourceSelectionMessage(t.sources.keepOneSelected)
+      setSourcePanelOpen(true)
+      return
+    }
+    setSourceManagerMessage('')
+    setPendingDeleteSource(source)
+  }
+
+  async function confirmDeleteSource() {
+    const source = pendingDeleteSource
+    if (!source || source.kind !== 'ssh') return
+
+    setDeletingSourceIds((current) => new Set(current).add(source.id))
+    setSourceManagerMessage(t.sources.deletingSource(source.label))
+    try {
+      const nextSources = await deleteCodexSource(source.id)
+      setCodexSources(nextSources)
+      detailCacheRef.current.clear()
+      setSourceSelectionMessage('')
+      setPendingDeleteSource(null)
+      await loadShell(false)
+      if (isTauri()) {
+        await emitTo(MENU_BAR_POPUP_WINDOW_LABEL, MENU_BAR_POPUP_REFRESH_EVENT, {}).catch(() => {})
+      }
+      setSourceManagerMessage(t.sources.deletedSource(source.label))
+    } catch (error) {
+      setSourceManagerMessage(String(error))
+      await refreshCodexSources()
+    } finally {
+      setDeletingSourceIds((current) => {
+        const next = new Set(current)
+        next.delete(source.id)
+        return next
+      })
+    }
+  }
+
   async function handleSaveSettings(payload: {
     syncSettings: SyncSettings
     subscriptionProfile: SubscriptionProfile
@@ -455,12 +644,14 @@ function App() {
     shareDimension,
     activeOverview?.modelShares ?? [],
     activeOverview?.compositionShares ?? [],
+    activeOverview?.sourceShares ?? [],
   )
   const activeDetail = snapshotIsCurrent ? detail : null
   const detailShareData = buildShareSlices(
     shareDimension,
     activeDetail?.modelBreakdown ?? [],
     activeDetail?.compositionBreakdown ?? [],
+    activeDetail?.sourceBreakdown ?? [],
   )
   const sessionSummariesById = new Map(
     (activeDetail?.sessions ?? []).map((session) => [session.sessionId, session] as const),
@@ -501,6 +692,7 @@ function App() {
             >
               <Sparkles size={18} /> {t.nav.conversations}
             </button>
+            <SidebarSourceManager onOpenManager={() => setSourceManagerOpen(true)} />
           </div>
 
           <div className="action-stack">
@@ -533,6 +725,13 @@ function App() {
           <section className="hero-panel hero-panel-filters hero-panel-filters--controls-only">
             <div className="hero-filter-region hero-filter-region--standalone">
               <div className="hero-filter-controls">
+                <SourceSelectorPanel
+                  isOpen={sourcePanelOpen}
+                  message={sourceSelectionMessage}
+                  onToggleOpen={() => setSourcePanelOpen((current) => !current)}
+                  onToggleSource={handleToggleSource}
+                  sources={codexSources}
+                />
                 <div className="pill-strip">
                   {BUCKETS.map((option) => (
                     <button
@@ -741,7 +940,13 @@ function App() {
                   onModeChange={setShareMode}
                   dimension={shareDimension}
                   onDimensionChange={setShareDimension}
-                  title={shareDimension === 'model' ? t.overview.modelShare : t.overview.costStructure}
+                  title={
+                    shareDimension === 'model'
+                      ? t.overview.modelShare
+                      : shareDimension === 'source'
+                        ? t.overview.sourceShare
+                        : t.overview.costStructure
+                  }
                   eyebrow={t.overview.distribution}
                 />
               </section>
@@ -857,6 +1062,8 @@ function App() {
                       title={
                         shareDimension === 'model'
                           ? t.detail.conversationModelBreakdown
+                          : shareDimension === 'source'
+                            ? t.detail.conversationSourceBreakdown
                           : t.detail.conversationCostBreakdown
                       }
                       eyebrow={t.detail.modelBreakdown}
@@ -933,6 +1140,36 @@ function App() {
         subscriptionRecords={subscriptionRecords}
         syncSettings={syncSettings}
       />
+
+      <SourceManagerModal
+        deletingSourceIds={deletingSourceIds}
+        downloadingSourceIds={downloadingSourceIds}
+        isOpen={sourceManagerOpen}
+        message={sourceManagerMessage}
+        onClose={() => setSourceManagerOpen(false)}
+        onDeleteSource={handleDeleteSource}
+        onDownloadAllSources={handleDownloadAllSources}
+        onDownloadSource={handleDownloadSource}
+        onOpenAddModal={handleOpenSourceModal}
+        sources={codexSources}
+      />
+
+      <SourceAddModal
+        candidates={sourceCandidates}
+        isOpen={sourceModalOpen}
+        message={sourceModalMessage}
+        onAddCandidate={handleAddSource}
+        onClose={() => setSourceModalOpen(false)}
+        onDiscover={handleDiscoverSources}
+        sources={codexSources}
+      />
+
+      <SourceDeleteDialog
+        isDeleting={pendingDeleteSource ? deletingSourceIds.has(pendingDeleteSource.id) : false}
+        onCancel={() => setPendingDeleteSource(null)}
+        onConfirm={confirmDeleteSource}
+        source={pendingDeleteSource}
+      />
     </div>
   )
 }
@@ -997,8 +1234,17 @@ function buildQueryKey(
   customEnd: string | null,
   search: string | null,
   liveWindowOffset: number,
+  sourceSelectionKey = '',
 ) {
-  return [bucket, anchor ?? '', customStart ?? '', customEnd ?? '', search ?? '', String(liveWindowOffset)].join('::')
+  return [
+    bucket,
+    anchor ?? '',
+    customStart ?? '',
+    customEnd ?? '',
+    search ?? '',
+    String(liveWindowOffset),
+    sourceSelectionKey,
+  ].join('::')
 }
 
 function formatCustomRangeLabel(windowStart: string | null, windowEnd: string | null, language: 'zh-CN' | 'en') {
@@ -1058,7 +1304,19 @@ function buildShareSlices(
   dimension: ShareDimension,
   modelShares: ModelShare[],
   compositionShares: CompositionShare[],
+  sourceShares: SourceShare[],
 ): ShareSlice[] {
+  if (dimension === 'source') {
+    return sourceShares.map((item) => ({
+      id: item.sourceId,
+      label: item.displayName,
+      secondaryLabel: item.sourceId,
+      apiValueUsd: item.apiValueUsd,
+      totalTokens: item.totalTokens,
+      color: item.color,
+    }))
+  }
+
   if (dimension === 'composition') {
     return compositionShares.map((item) => ({
       id: item.category,

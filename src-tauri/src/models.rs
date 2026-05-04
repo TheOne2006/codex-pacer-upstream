@@ -134,6 +134,69 @@ impl Default for SyncSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CodexSource {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    pub ssh_alias: Option<String>,
+    pub host_name: Option<String>,
+    pub user: Option<String>,
+    pub port: Option<i64>,
+    pub remote_codex_home: Option<String>,
+    pub local_codex_home: Option<String>,
+    pub selected: bool,
+    pub status: String,
+    pub last_discovered_at: Option<String>,
+    pub last_downloaded_at: Option<String>,
+    pub last_scanned_at: Option<String>,
+    pub last_error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexSourceCandidate {
+    pub id: String,
+    pub label: String,
+    pub ssh_alias: String,
+    pub host_name: Option<String>,
+    pub user: Option<String>,
+    pub port: Option<i64>,
+    pub remote_codex_home: String,
+    pub ignored_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexSourceInput {
+    pub label: String,
+    pub ssh_alias: String,
+    pub host_name: Option<String>,
+    pub user: Option<String>,
+    pub port: Option<i64>,
+    pub remote_codex_home: String,
+    pub selected: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexSourceDownloadProgress {
+    pub source_id: String,
+    pub stage: String,
+    pub progress: Option<f64>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexSourceDownloadResult {
+    pub source: CodexSource,
+    pub scan_result: ScanResult,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SubscriptionProfile {
   pub plan_type: String,
   pub currency: String,
@@ -188,6 +251,7 @@ pub struct ConversationFilters {
   pub custom_end: Option<String>,
   pub search: Option<String>,
   pub live_window_offset: Option<i64>,
+    pub source_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -326,6 +390,17 @@ pub struct CompositionShare {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SourceShare {
+    pub source_id: String,
+    pub display_name: String,
+    pub api_value_usd: f64,
+    pub total_tokens: i64,
+    pub conversation_count: usize,
+    pub color: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OverviewResponse {
   pub bucket: String,
   pub anchor: String,
@@ -338,6 +413,7 @@ pub struct OverviewResponse {
   pub quota_trend: Vec<QuotaTrendPoint>,
   pub model_shares: Vec<ModelShare>,
   pub composition_shares: Vec<CompositionShare>,
+    pub source_shares: Vec<SourceShare>,
   pub live_rate_limits: Option<LiveRateLimitSnapshot>,
 }
 
@@ -346,6 +422,7 @@ pub struct OverviewResponse {
 pub struct DashboardSnapshot {
   pub overview: OverviewResponse,
   pub conversations: Vec<ConversationListItem>,
+    pub codex_sources: Vec<CodexSource>,
   pub sync_settings: SyncSettings,
   pub subscription_profile: SubscriptionProfile,
   pub subscription_records: Vec<SubscriptionRecord>,
@@ -438,6 +515,7 @@ pub struct ConversationDetail {
   pub turns: Vec<ConversationTurnPoint>,
   pub model_breakdown: Vec<ModelShare>,
   pub composition_breakdown: Vec<CompositionShare>,
+    pub source_breakdown: Vec<SourceShare>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

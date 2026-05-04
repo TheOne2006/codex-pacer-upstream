@@ -6,36 +6,46 @@ use super::now_utc_string;
 
 pub fn replace_session_rate_limit_samples(
     conn: &Connection,
+    source_id: &str,
     session_id: &str,
     samples: &[RateLimitSampleRecord],
 ) -> rusqlite::Result<()> {
     conn.execute(
         "
     DELETE FROM rate_limit_samples
-    WHERE source_kind = 'session' AND source_session_id = ?1
+    WHERE source_id = ?1 AND source_kind = 'session' AND source_session_id = ?2
     ",
-        params![session_id],
+        params![source_id, session_id],
     )?;
-    insert_rate_limit_samples(conn, samples)
+    insert_rate_limit_samples_for_source(conn, source_id, samples)
 }
 
 pub fn insert_rate_limit_samples(
     conn: &Connection,
     samples: &[RateLimitSampleRecord],
 ) -> rusqlite::Result<()> {
+    insert_rate_limit_samples_for_source(conn, "local", samples)
+}
+
+fn insert_rate_limit_samples_for_source(
+    conn: &Connection,
+    source_id: &str,
+    samples: &[RateLimitSampleRecord],
+) -> rusqlite::Result<()> {
     let created_at = now_utc_string();
     let mut stmt = conn.prepare(
         "
     INSERT OR IGNORE INTO rate_limit_samples (
-      source_kind, source_session_id, bucket, sample_timestamp, limit_id, limit_name, plan_type,
+      source_id, source_kind, source_session_id, bucket, sample_timestamp, limit_id, limit_name, plan_type,
       window_start, resets_at, used_percent, remaining_percent, created_at
     )
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
     ",
     )?;
 
     for sample in samples {
         stmt.execute(params![
+            source_id,
             sample.source_kind,
             sample.source_session_id.clone().unwrap_or_default(),
             sample.bucket,

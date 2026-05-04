@@ -14,7 +14,8 @@ use crate::database::{
 };
 use crate::models::{RateLimitSampleRecord, RawSession, ScanResult, TokenUsage, UsageSnapshot};
 use crate::pricing::{
-  calculate_value_usd, load_catalog_map, normalize_model_id, resolve_pricing, seed_pricing_catalog,
+    calculate_value_usd, load_catalog_map, normalize_model_id, resolve_pricing,
+    seed_pricing_catalog,
 };
 
 #[derive(Debug, Clone)]
@@ -61,7 +62,18 @@ enum SessionParseError {
   Fatal(String),
 }
 
-pub fn perform_scan(db_path: &Path, codex_home_override: Option<String>) -> Result<ScanResult, String> {
+pub fn perform_scan(
+    db_path: &Path,
+    codex_home_override: Option<String>,
+) -> Result<ScanResult, String> {
+    perform_scan_for_source(db_path, "local", codex_home_override)
+}
+
+pub fn perform_scan_for_source(
+    db_path: &Path,
+    source_id: &str,
+    codex_home_override: Option<String>,
+) -> Result<ScanResult, String> {
   let mut conn = open_connection(db_path).map_err(|error| error.to_string())?;
   init_db(&conn).map_err(|error| error.to_string())?;
   seed_pricing_catalog(&conn).map_err(|error| error.to_string())?;
@@ -76,8 +88,9 @@ pub fn perform_scan(db_path: &Path, codex_home_override: Option<String>) -> Resu
     .map(|item| item.path.to_string_lossy().to_string())
     .collect();
 
-  let import_state = load_import_state(&conn).map_err(|error| error.to_string())?;
-  let needs_rate_limit_backfill = needs_rate_limit_sample_backfill(&conn).map_err(|error| error.to_string())?;
+    let import_state = load_import_state(&conn, source_id).map_err(|error| error.to_string())?;
+    let needs_rate_limit_backfill =
+        needs_rate_limit_sample_backfill(&conn).map_err(|error| error.to_string())?;
 
   let mut changed_sessions = 0usize;
   let mut imported_session_ids = HashSet::new();
@@ -109,7 +122,8 @@ pub fn perform_scan(db_path: &Path, codex_home_override: Option<String>) -> Resu
   if !changed_files.is_empty() {
     let titles = load_session_index(&codex_home);
     let catalog = load_catalog_map(&conn).map_err(|error| error.to_string())?;
-    let existing_relations = load_existing_session_relations(&conn).map_err(|error| error.to_string())?;
+        let existing_relations =
+            load_existing_session_relations(&conn).map_err(|error| error.to_string())?;
 
     for session_file in changed_files {
       let parsed = match parse_session_file(session_file, &titles) {
@@ -127,7 +141,10 @@ pub fn perform_scan(db_path: &Path, codex_home_override: Option<String>) -> Resu
 
       match classify_topology_maintenance(
         existing_relations.get(&parsed.raw_session.session_id),
-        existing_relations.get(&parsed.raw_session.session_id).map(|item| item.child_count).unwrap_or_default(),
+                existing_relations
+                    .get(&parsed.raw_session.session_id)
+                    .map(|item| item.child_count)
+                    .unwrap_or_default(),
         parsed.raw_session.parent_session_id.as_deref(),
       ) {
         TopologyMaintenance::None => {}
@@ -139,23 +156,25 @@ pub fn perform_scan(db_path: &Path, codex_home_override: Option<String>) -> Resu
         }
       }
 
-      persist_session(&mut conn, session_file, &parsed, &catalog).map_err(|error| error.to_string())?;
+            persist_session(&mut conn, source_id, session_file, &parsed, &catalog)
+                .map_err(|error| error.to_string())?;
       changed_sessions += 1;
     }
   }
 
-  mark_missing_sources(&conn, &present_paths).map_err(|error| error.to_string())?;
-  prune_import_state(&conn, &present_paths).map_err(|error| error.to_string())?;
+    mark_missing_sources(&conn, source_id, &present_paths).map_err(|error| error.to_string())?;
+    prune_import_state(&conn, source_id, &present_paths).map_err(|error| error.to_string())?;
   if topology_dirty {
     recompute_conversation_links(&conn).map_err(|error| error.to_string())?;
   } else if !new_root_session_ids.is_empty() {
-    upsert_root_conversation_links(&conn, &new_root_session_ids).map_err(|error| error.to_string())?;
+        upsert_root_conversation_links(&conn, &new_root_session_ids)
+            .map_err(|error| error.to_string())?;
   }
 
   let missing_sessions = conn
     .query_row(
-      "SELECT COUNT(*) FROM sessions WHERE source_state = 'missing'",
-      [],
+            "SELECT COUNT(*) FROM sessions WHERE source_id = ?1 AND source_state = 'missing'",
+            params![source_id],
       |row| row.get::<_, i64>(0),
     )
     .map_err(|error| error.to_string())? as usize;
@@ -231,7 +250,10 @@ fn classify_topology_maintenance(
   existing_child_count: usize,
   parent_session_id: Option<&str>,
 ) -> TopologyMaintenance {
-  match (existing_relation.filter(|item| item.exists), parent_session_id) {
+    match (
+        existing_relation.filter(|item| item.exists),
+        parent_session_id,
+    ) {
     (Some(existing_relation), next_parent_session_id) => {
       if existing_relation.parent_session_id.as_deref() == next_parent_session_id {
         TopologyMaintenance::None
@@ -263,7 +285,10 @@ pub fn recalculate_all_session_values(conn: &Connection) -> rusqlite::Result<()>
   Ok(())
 }
 
-fn resolve_codex_home(conn: &Connection, override_value: Option<String>) -> Result<PathBuf, String> {
+fn resolve_codex_home(
+    conn: &Connection,
+    override_value: Option<String>,
+) -> Result<PathBuf, String> {
   if let Some(path) = override_value {
     return Ok(PathBuf::from(path));
   }
@@ -367,8 +392,12 @@ fn parse_session_file_once(
   session_file: &SessionFile,
   titles: &HashMap<String, String>,
 ) -> Result<ParsedSession, SessionParseError> {
-  let file = File::open(&session_file.path)
-    .map_err(|error| SessionParseError::Fatal(format!("Failed to open {}: {error}", session_file.path.display())))?;
+    let file = File::open(&session_file.path).map_err(|error| {
+        SessionParseError::Fatal(format!(
+            "Failed to open {}: {error}",
+            session_file.path.display()
+        ))
+    })?;
   let expected_session_id = fallback_session_id_from_filename(&session_file.path);
 
   let mut session_id = String::new();
@@ -416,7 +445,11 @@ fn parse_session_file_once(
       updated_at = timestamp.clone();
     }
 
-    match value.get("type").and_then(Value::as_str).unwrap_or_default() {
+        match value
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+        {
       "session_meta" => {
         let payload = value.get("payload").unwrap_or(&Value::Null);
         let parent = payload
@@ -525,7 +558,9 @@ fn parse_session_file_once(
         let sample_timestamp = timestamp.unwrap_or_else(now_utc_string);
         rate_limit_samples.extend(extract_rate_limit_samples(&sample_timestamp, payload));
 
-        let model_id = current_model.clone().unwrap_or_else(|| "unknown".to_string());
+                let model_id = current_model
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string());
         seen_models.insert(model_id.clone());
 
         snapshots.push(UsageSnapshot {
@@ -618,12 +653,16 @@ fn looks_like_session_id(value: &str) -> bool {
     .iter()
     .zip(expected_lengths.iter())
     .all(|(segment, expected_len)| {
-      segment.len() == *expected_len && segment.chars().all(|character| character.is_ascii_hexdigit())
+            segment.len() == *expected_len
+                && segment
+                    .chars()
+                    .all(|character| character.is_ascii_hexdigit())
     })
 }
 
 fn persist_session(
   conn: &mut Connection,
+    source_id: &str,
   session_file: &SessionFile,
   parsed: &ParsedSession,
   catalog: &HashMap<String, crate::models::PricingCatalogEntry>,
@@ -636,12 +675,13 @@ fn persist_session(
   tx.execute(
     "
     INSERT INTO sessions (
-      session_id, root_session_id, parent_session_id, title, source_state, source_path,
+      session_id, source_id, root_session_id, parent_session_id, title, source_state, source_path,
       source_bucket, started_at, updated_at, agent_nickname, agent_role, explicit_fast_mode,
       fast_mode_default, latest_plan_type, last_model_id, contains_subagents, created_at, imported_at
     )
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, 0, ?16, ?17)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 0, ?17, ?18)
     ON CONFLICT(session_id) DO UPDATE SET
+      source_id = excluded.source_id,
       root_session_id = sessions.root_session_id,
       parent_session_id = excluded.parent_session_id,
       title = COALESCE(excluded.title, sessions.title),
@@ -660,6 +700,7 @@ fn persist_session(
     ",
     params![
       parsed.raw_session.session_id,
+      source_id,
       parsed.raw_session.root_session_id,
       parsed.raw_session.parent_session_id,
       parsed.raw_session.title,
@@ -683,7 +724,12 @@ fn persist_session(
     "DELETE FROM usage_events WHERE session_id = ?1",
     params![parsed.raw_session.session_id],
   )?;
-  replace_session_rate_limit_samples(&tx, &parsed.raw_session.session_id, &parsed.rate_limit_samples)?;
+    replace_session_rate_limit_samples(
+        &tx,
+        source_id,
+        &parsed.raw_session.session_id,
+        &parsed.rate_limit_samples,
+    )?;
 
   let mut previous_usage: Option<TokenUsage> = None;
 
@@ -733,9 +779,10 @@ fn persist_session(
 
   tx.execute(
     "
-    INSERT INTO import_state (source_path, session_id, source_bucket, file_size, file_mtime_ms, last_imported_at)
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+    INSERT INTO import_state (source_path, source_id, session_id, source_bucket, file_size, file_mtime_ms, last_imported_at)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
     ON CONFLICT(source_path) DO UPDATE SET
+      source_id = excluded.source_id,
       session_id = excluded.session_id,
       source_bucket = excluded.source_bucket,
       file_size = excluded.file_size,
@@ -744,6 +791,7 @@ fn persist_session(
     ",
     params![
       session_file.path.to_string_lossy().to_string(),
+      source_id,
       parsed.raw_session.session_id,
       session_file.bucket,
       session_file.file_size,
@@ -755,9 +803,10 @@ fn persist_session(
   tx.execute(
     "
     DELETE FROM import_state
-    WHERE session_id = ?1 AND source_path <> ?2
+    WHERE source_id = ?1 AND session_id = ?2 AND source_path <> ?3
     ",
     params![
+            source_id,
       parsed.raw_session.session_id,
       session_file.path.to_string_lossy().to_string(),
     ],
@@ -829,7 +878,9 @@ fn extract_rate_limit_samples(timestamp: &str, payload: &Value) -> Vec<RateLimit
     let Some(resets_at) = unix_seconds_to_rfc3339_local(resets_at_seconds) else {
       continue;
     };
-    let Some(window_start) = unix_seconds_to_rfc3339_local(resets_at_seconds - window_duration_mins * 60) else {
+        let Some(window_start) =
+            unix_seconds_to_rfc3339_local(resets_at_seconds - window_duration_mins * 60)
+        else {
       continue;
     };
 
@@ -858,7 +909,9 @@ fn extract_rate_limit_samples(timestamp: &str, payload: &Value) -> Vec<RateLimit
 fn unix_seconds_to_rfc3339_local(value: i64) -> Option<String> {
   match Local.timestamp_opt(value, 0) {
     LocalResult::Single(timestamp) => Some(normalize_local_timestamp(timestamp).to_rfc3339()),
-    LocalResult::Ambiguous(timestamp, _) => Some(normalize_local_timestamp(timestamp).to_rfc3339()),
+        LocalResult::Ambiguous(timestamp, _) => {
+            Some(normalize_local_timestamp(timestamp).to_rfc3339())
+        }
     LocalResult::None => None,
   }
 }
@@ -870,15 +923,19 @@ fn normalize_local_timestamp(timestamp: chrono::DateTime<Local>) -> chrono::Date
     .unwrap_or(timestamp)
 }
 
-fn load_import_state(conn: &Connection) -> rusqlite::Result<HashMap<String, ImportState>> {
+fn load_import_state(
+    conn: &Connection,
+    source_id: &str,
+) -> rusqlite::Result<HashMap<String, ImportState>> {
   let mut stmt = conn.prepare(
     "
     SELECT source_path, session_id, file_size, file_mtime_ms
     FROM import_state
+    WHERE source_id = ?1
     ",
   )?;
 
-  let rows = stmt.query_map([], |row| {
+    let rows = stmt.query_map(params![source_id], |row| {
     Ok(ImportState {
       source_path: row.get(0)?,
       session_id: row.get(1)?,
@@ -908,7 +965,9 @@ fn needs_rate_limit_sample_backfill(conn: &Connection) -> rusqlite::Result<bool>
   Ok(count == 0)
 }
 
-fn load_existing_session_relations(conn: &Connection) -> rusqlite::Result<HashMap<String, ExistingSessionRelation>> {
+fn load_existing_session_relations(
+    conn: &Connection,
+) -> rusqlite::Result<HashMap<String, ExistingSessionRelation>> {
   let mut stmt = conn.prepare("SELECT session_id, parent_session_id FROM sessions")?;
   let rows = stmt.query_map([], |row| {
     Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
@@ -928,7 +987,10 @@ fn load_existing_session_relations(conn: &Connection) -> rusqlite::Result<HashMa
   Ok(relations)
 }
 
-fn upsert_root_conversation_links(conn: &Connection, session_ids: &[String]) -> rusqlite::Result<()> {
+fn upsert_root_conversation_links(
+    conn: &Connection,
+    session_ids: &[String],
+) -> rusqlite::Result<()> {
   for session_id in session_ids {
     conn.execute(
       "
@@ -946,9 +1008,17 @@ fn upsert_root_conversation_links(conn: &Connection, session_ids: &[String]) -> 
   Ok(())
 }
 
-fn mark_missing_sources(conn: &Connection, present_paths: &HashSet<String>) -> rusqlite::Result<()> {
-  let mut stmt = conn.prepare("SELECT session_id, source_path FROM sessions WHERE source_path IS NOT NULL")?;
-  let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+fn mark_missing_sources(
+    conn: &Connection,
+    source_id: &str,
+    present_paths: &HashSet<String>,
+) -> rusqlite::Result<()> {
+    let mut stmt = conn.prepare(
+    "SELECT session_id, source_path FROM sessions WHERE source_id = ?1 AND source_path IS NOT NULL",
+  )?;
+    let rows = stmt.query_map(params![source_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
 
   for row in rows {
     let (session_id, source_path) = row?;
@@ -966,15 +1036,19 @@ fn mark_missing_sources(conn: &Connection, present_paths: &HashSet<String>) -> r
   Ok(())
 }
 
-fn prune_import_state(conn: &Connection, present_paths: &HashSet<String>) -> rusqlite::Result<()> {
-  let mut stmt = conn.prepare("SELECT source_path FROM import_state")?;
-  let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+fn prune_import_state(
+    conn: &Connection,
+    source_id: &str,
+    present_paths: &HashSet<String>,
+) -> rusqlite::Result<()> {
+    let mut stmt = conn.prepare("SELECT source_path FROM import_state WHERE source_id = ?1")?;
+    let rows = stmt.query_map(params![source_id], |row| row.get::<_, String>(0))?;
   for row in rows {
     let source_path = row?;
     if !present_paths.contains(&source_path) && !Path::new(&source_path).exists() {
       conn.execute(
-        "DELETE FROM import_state WHERE source_path = ?1",
-        params![source_path],
+                "DELETE FROM import_state WHERE source_id = ?1 AND source_path = ?2",
+                params![source_id, source_path],
       )?;
     }
   }
@@ -1009,7 +1083,12 @@ fn recompute_conversation_links(conn: &Connection) -> rusqlite::Result<()> {
         parent_session_id = excluded.parent_session_id,
         depth = excluded.depth
       ",
-      params![session_id, root_session_id, parents.get(session_id).cloned().flatten(), depth as i64],
+            params![
+                session_id,
+                root_session_id,
+                parents.get(session_id).cloned().flatten(),
+                depth as i64
+            ],
     )?;
 
     conn.execute(
@@ -1064,15 +1143,18 @@ fn read_i64(value: &Value, key: &str) -> i64 {
 }
 
 fn read_total_tokens(value: &Value) -> i64 {
-  value.get("total_tokens").and_then(Value::as_i64).unwrap_or_else(|| {
-    read_i64(value, "input_tokens") + read_i64(value, "output_tokens")
-  })
+    value
+        .get("total_tokens")
+        .and_then(Value::as_i64)
+        .unwrap_or_else(|| read_i64(value, "input_tokens") + read_i64(value, "output_tokens"))
 }
 
 fn read_percent(value: &Value, key: &str) -> Option<i64> {
-  value
-    .get(key)
-    .and_then(|field| field.as_i64().or_else(|| field.as_f64().map(|number| number.round() as i64)))
+    value.get(key).and_then(|field| {
+        field
+            .as_i64()
+            .or_else(|| field.as_f64().map(|number| number.round() as i64))
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -1166,9 +1248,8 @@ mod tests {
       )
       .expect("query usage");
 
-    let standard = (75.0 / 1_000_000.0) * 5.0
-      + (25.0 / 1_000_000.0) * 0.5
-      + (40.0 / 1_000_000.0) * 30.0;
+        let standard =
+            (75.0 / 1_000_000.0) * 5.0 + (25.0 / 1_000_000.0) * 0.5 + (40.0 / 1_000_000.0) * 30.0;
     assert!((value_usd - standard).abs() < 1e-9);
     assert_eq!(fast_mode_auto, 0);
     assert_eq!(fast_mode_effective, 0);
@@ -1183,7 +1264,9 @@ mod tests {
 
     let child_session_id = "019d4f72-a2ee-77a0-bd4a-76f43b7b299b";
     let wrong_session_id = "019d4d7c-457e-7020-8b5f-7940eb5e3716";
-    let session_path = sessions_dir.join(format!("rollout-2026-04-03T02-26-46-{child_session_id}.jsonl"));
+        let session_path = sessions_dir.join(format!(
+            "rollout-2026-04-03T02-26-46-{child_session_id}.jsonl"
+        ));
     write_session_file_with_parent(
       &session_path,
       child_session_id,
@@ -1232,7 +1315,10 @@ mod tests {
       .optional()
       .expect("query repaired import state");
     assert_eq!(repaired_session_id.as_deref(), Some(child_session_id));
-    assert_eq!(session_usage_totals(&conn, child_session_id), (100, 20, 25, 125, 1));
+        assert_eq!(
+            session_usage_totals(&conn, child_session_id),
+            (100, 20, 25, 125, 1)
+        );
   }
 
   #[test]
@@ -1261,7 +1347,10 @@ mod tests {
     )
     .expect("parse");
 
-    assert_eq!(parsed.raw_session.parent_session_id.as_deref(), Some("root-parent"));
+        assert_eq!(
+            parsed.raw_session.parent_session_id.as_deref(),
+            Some("root-parent")
+        );
     assert_eq!(parsed.raw_session.agent_nickname.as_deref(), Some("Hume"));
     assert_eq!(parsed.snapshots.len(), 2);
     assert_eq!(parsed.latest_plan_type.as_deref(), Some("pro"));
@@ -1270,8 +1359,7 @@ mod tests {
   #[test]
   fn parser_prefers_file_matching_session_meta_when_fork_file_replays_parent_meta() {
     let directory = tempdir().expect("tempdir");
-    let session_path =
-      directory
+        let session_path = directory
         .path()
         .join("rollout-2026-03-24T00-00-00-55555555-5555-5555-5555-555555555555.jsonl");
     std::fs::write(
@@ -1296,7 +1384,10 @@ mod tests {
     )
     .expect("parse");
 
-    assert_eq!(parsed.raw_session.session_id, "55555555-5555-5555-5555-555555555555");
+        assert_eq!(
+            parsed.raw_session.session_id,
+            "55555555-5555-5555-5555-555555555555"
+        );
     assert_eq!(
       parsed.raw_session.parent_session_id.as_deref(),
       Some("44444444-4444-4444-4444-444444444444")
@@ -1363,8 +1454,7 @@ mod tests {
   #[test]
   fn parser_supports_legacy_top_level_id_format() {
     let directory = tempdir().expect("tempdir");
-    let session_path =
-      directory
+        let session_path = directory
         .path()
         .join("rollout-2025-09-09T16-29-03-0df0be29-d74d-468f-8dda-0630fc6e989e.jsonl");
     std::fs::write(
@@ -1388,15 +1478,20 @@ mod tests {
     )
     .expect("parse");
 
-    assert_eq!(parsed.raw_session.session_id, "0df0be29-d74d-468f-8dda-0630fc6e989e");
-    assert_eq!(parsed.raw_session.started_at.as_deref(), Some("2025-09-09T08:29:03.118Z"));
+        assert_eq!(
+            parsed.raw_session.session_id,
+            "0df0be29-d74d-468f-8dda-0630fc6e989e"
+        );
+        assert_eq!(
+            parsed.raw_session.started_at.as_deref(),
+            Some("2025-09-09T08:29:03.118Z")
+        );
   }
 
   #[test]
   fn parser_falls_back_to_session_id_from_filename() {
     let directory = tempdir().expect("tempdir");
-    let session_path =
-      directory
+        let session_path = directory
         .path()
         .join("rollout-2026-03-17T18-00-21-019cfb3d-415c-7623-aab0-22e73abcec2e.jsonl");
     std::fs::write(
@@ -1419,7 +1514,10 @@ mod tests {
     )
     .expect("parse");
 
-    assert_eq!(parsed.raw_session.session_id, "019cfb3d-415c-7623-aab0-22e73abcec2e");
+        assert_eq!(
+            parsed.raw_session.session_id,
+            "019cfb3d-415c-7623-aab0-22e73abcec2e"
+        );
   }
 
   #[test]
@@ -1430,11 +1528,19 @@ mod tests {
       child_count: 0,
     };
     assert_eq!(
-      classify_topology_maintenance(Some(&existing_child), existing_child.child_count, Some("root-parent")),
+            classify_topology_maintenance(
+                Some(&existing_child),
+                existing_child.child_count,
+                Some("root-parent")
+            ),
       TopologyMaintenance::None
     );
     assert_eq!(
-      classify_topology_maintenance(Some(&existing_child), existing_child.child_count, Some("other-parent")),
+            classify_topology_maintenance(
+                Some(&existing_child),
+                existing_child.child_count,
+                Some("other-parent")
+            ),
       TopologyMaintenance::RecomputeAll
     );
 
@@ -1444,7 +1550,11 @@ mod tests {
       child_count: 2,
     };
     assert_eq!(
-      classify_topology_maintenance(Some(&missing_parent_placeholder), missing_parent_placeholder.child_count, None),
+            classify_topology_maintenance(
+                Some(&missing_parent_placeholder),
+                missing_parent_placeholder.child_count,
+                None
+            ),
       TopologyMaintenance::RecomputeAll
     );
     assert_eq!(
@@ -1466,7 +1576,11 @@ mod tests {
 
     let parent_session_id = "44444444-4444-4444-4444-444444444444";
     let child_session_id = "55555555-5555-5555-5555-555555555555";
-    write_session_file(&sessions_dir.join("parent.jsonl"), parent_session_id, &[("2026-03-24T00:00:01Z", 120, 20, 30, 150)]);
+        write_session_file(
+            &sessions_dir.join("parent.jsonl"),
+            parent_session_id,
+            &[("2026-03-24T00:00:01Z", 120, 20, 30, 150)],
+        );
     write_session_file_with_parent(
       &sessions_dir.join("child.jsonl"),
       child_session_id,
@@ -1486,7 +1600,8 @@ mod tests {
         ("2026-03-24T00:10:02Z", 160, 20, 25, 185),
       ],
     );
-    perform_scan(&db_path, Some(codex_home.to_string_lossy().to_string())).expect("second scan");
+        perform_scan(&db_path, Some(codex_home.to_string_lossy().to_string()))
+            .expect("second scan");
 
     let conn = open_connection(&db_path).expect("open db");
     assert_eq!(
@@ -1499,7 +1614,11 @@ mod tests {
     );
     assert_eq!(
       conversation_link(&conn, child_session_id),
-      Some((parent_session_id.to_string(), Some(parent_session_id.to_string()), 1))
+            Some((
+                parent_session_id.to_string(),
+                Some(parent_session_id.to_string()),
+                1
+            ))
     );
   }
 
@@ -1527,7 +1646,8 @@ mod tests {
       parent_session_id,
       &[("2026-03-24T00:00:01Z", 120, 20, 30, 150)],
     );
-    perform_scan(&db_path, Some(codex_home.to_string_lossy().to_string())).expect("second scan");
+        perform_scan(&db_path, Some(codex_home.to_string_lossy().to_string()))
+            .expect("second scan");
 
     let conn = open_connection(&db_path).expect("open db");
     assert_eq!(
@@ -1540,7 +1660,11 @@ mod tests {
     );
     assert_eq!(
       conversation_link(&conn, child_session_id),
-      Some((parent_session_id.to_string(), Some(parent_session_id.to_string()), 1))
+            Some((
+                parent_session_id.to_string(),
+                Some(parent_session_id.to_string()),
+                1
+            ))
     );
   }
 
@@ -1558,24 +1682,35 @@ mod tests {
     write_session_file(
       &active_path,
       session_id,
-      &[
-        ("2026-03-24T00:00:01Z", 100, 20, 25, 125),
-      ],
+            &[("2026-03-24T00:00:01Z", 100, 20, 25, 125)],
     );
 
     let db_path = directory.path().join("usage.sqlite");
     perform_scan(&db_path, Some(codex_home.to_string_lossy().to_string())).expect("first scan");
     let conn = open_connection(&db_path).expect("open db");
-    assert_eq!(session_usage_totals(&conn, session_id), (100, 20, 25, 125, 1));
-    assert_eq!(session_source_state(&conn, session_id), Some("active".to_string()));
+        assert_eq!(
+            session_usage_totals(&conn, session_id),
+            (100, 20, 25, 125, 1)
+        );
+        assert_eq!(
+            session_source_state(&conn, session_id),
+            Some("active".to_string())
+        );
 
     let archived_path = archived_dir.join("sample.jsonl");
     std::fs::rename(&active_path, &archived_path).expect("move to archived");
 
-    perform_scan(&db_path, Some(codex_home.to_string_lossy().to_string())).expect("second scan");
+        perform_scan(&db_path, Some(codex_home.to_string_lossy().to_string()))
+            .expect("second scan");
     let conn = open_connection(&db_path).expect("open db");
-    assert_eq!(session_usage_totals(&conn, session_id), (100, 20, 25, 125, 1));
-    assert_eq!(session_source_state(&conn, session_id), Some("archived".to_string()));
+        assert_eq!(
+            session_usage_totals(&conn, session_id),
+            (100, 20, 25, 125, 1)
+        );
+        assert_eq!(
+            session_source_state(&conn, session_id),
+            Some("archived".to_string())
+        );
   }
 
   #[test]
@@ -1590,19 +1725,24 @@ mod tests {
     write_session_file(
       &session_path,
       session_id,
-      &[
-        ("2026-03-24T00:00:01Z", 150, 30, 40, 190),
-      ],
+            &[("2026-03-24T00:00:01Z", 150, 30, 40, 190)],
     );
 
     let db_path = directory.path().join("usage.sqlite");
     perform_scan(&db_path, Some(codex_home.to_string_lossy().to_string())).expect("first scan");
     std::fs::remove_file(&session_path).expect("delete source");
 
-    perform_scan(&db_path, Some(codex_home.to_string_lossy().to_string())).expect("second scan");
+        perform_scan(&db_path, Some(codex_home.to_string_lossy().to_string()))
+            .expect("second scan");
     let conn = open_connection(&db_path).expect("open db");
-    assert_eq!(session_usage_totals(&conn, session_id), (150, 30, 40, 190, 1));
-    assert_eq!(session_source_state(&conn, session_id), Some("missing".to_string()));
+        assert_eq!(
+            session_usage_totals(&conn, session_id),
+            (150, 30, 40, 190, 1)
+        );
+        assert_eq!(
+            session_source_state(&conn, session_id),
+            Some("missing".to_string())
+        );
   }
 
   #[test]
@@ -1617,15 +1757,14 @@ mod tests {
     write_session_file(
       &session_path,
       session_id,
-      &[
-        ("2026-03-24T00:00:01Z", 100, 20, 25, 125),
-      ],
+            &[("2026-03-24T00:00:01Z", 100, 20, 25, 125)],
     );
 
     let db_path = directory.path().join("usage.sqlite");
     perform_scan(&db_path, Some(codex_home.to_string_lossy().to_string())).expect("first scan");
     std::fs::remove_file(&session_path).expect("delete source");
-    perform_scan(&db_path, Some(codex_home.to_string_lossy().to_string())).expect("second scan");
+        perform_scan(&db_path, Some(codex_home.to_string_lossy().to_string()))
+            .expect("second scan");
 
     write_session_file(
       &session_path,
@@ -1638,8 +1777,14 @@ mod tests {
     perform_scan(&db_path, Some(codex_home.to_string_lossy().to_string())).expect("third scan");
 
     let conn = open_connection(&db_path).expect("open db");
-    assert_eq!(session_usage_totals(&conn, session_id), (180, 40, 45, 225, 2));
-    assert_eq!(session_source_state(&conn, session_id), Some("active".to_string()));
+        assert_eq!(
+            session_usage_totals(&conn, session_id),
+            (180, 40, 45, 225, 2)
+        );
+        assert_eq!(
+            session_source_state(&conn, session_id),
+            Some("active".to_string())
+        );
   }
 
   #[test]
@@ -1654,16 +1799,17 @@ mod tests {
     write_session_file(
       &session_path,
       session_id,
-      &[
-        ("2026-03-24T00:00:01Z", 100, 20, 25, 125),
-      ],
+            &[("2026-03-24T00:00:01Z", 100, 20, 25, 125)],
     );
 
     let db_path = directory.path().join("usage.sqlite");
     perform_scan(&db_path, Some(codex_home.to_string_lossy().to_string())).expect("first scan");
 
     let conn = open_connection(&db_path).expect("open db after first scan");
-    assert_eq!(session_usage_totals(&conn, session_id), (100, 20, 25, 125, 1));
+        assert_eq!(
+            session_usage_totals(&conn, session_id),
+            (100, 20, 25, 125, 1)
+        );
     drop(conn);
 
     write_session_file(
@@ -1674,10 +1820,14 @@ mod tests {
         ("2026-03-24T00:00:10Z", 180, 40, 45, 225),
       ],
     );
-    perform_scan(&db_path, Some(codex_home.to_string_lossy().to_string())).expect("second scan");
+        perform_scan(&db_path, Some(codex_home.to_string_lossy().to_string()))
+            .expect("second scan");
 
     let conn = open_connection(&db_path).expect("open db after second scan");
-    assert_eq!(session_usage_totals(&conn, session_id), (180, 40, 45, 225, 2));
+        assert_eq!(
+            session_usage_totals(&conn, session_id),
+            (180, 40, 45, 225, 2)
+        );
   }
 
   #[test]
@@ -1692,16 +1842,17 @@ mod tests {
     write_session_file(
       &session_path,
       session_id,
-      &[
-        ("2026-03-24T00:00:01Z", 100, 20, 25, 125),
-      ],
+            &[("2026-03-24T00:00:01Z", 100, 20, 25, 125)],
     );
 
     let db_path = directory.path().join("usage.sqlite");
     perform_scan(&db_path, Some(codex_home.to_string_lossy().to_string())).expect("first scan");
 
     let conn = open_connection(&db_path).expect("open db after first scan");
-    assert_eq!(session_usage_totals(&conn, session_id), (100, 20, 25, 125, 1));
+        assert_eq!(
+            session_usage_totals(&conn, session_id),
+            (100, 20, 25, 125, 1)
+        );
     drop(conn);
 
     std::fs::write(
@@ -1715,10 +1866,14 @@ mod tests {
     )
     .expect("write incomplete session");
 
-    perform_scan(&db_path, Some(codex_home.to_string_lossy().to_string())).expect("second scan");
+        perform_scan(&db_path, Some(codex_home.to_string_lossy().to_string()))
+            .expect("second scan");
 
     let conn = open_connection(&db_path).expect("open db after incomplete rescan");
-    assert_eq!(session_usage_totals(&conn, session_id), (100, 20, 25, 125, 1));
+        assert_eq!(
+            session_usage_totals(&conn, session_id),
+            (100, 20, 25, 125, 1)
+        );
     drop(conn);
 
     write_session_file(
@@ -1732,7 +1887,10 @@ mod tests {
     perform_scan(&db_path, Some(codex_home.to_string_lossy().to_string())).expect("third scan");
 
     let conn = open_connection(&db_path).expect("open db after third scan");
-    assert_eq!(session_usage_totals(&conn, session_id), (180, 40, 45, 225, 2));
+        assert_eq!(
+            session_usage_totals(&conn, session_id),
+            (180, 40, 45, 225, 2)
+        );
   }
 
   #[test]
@@ -1765,10 +1923,14 @@ mod tests {
     )
     .expect("write active session with incomplete tail");
 
-    perform_scan(&db_path, Some(codex_home.to_string_lossy().to_string())).expect("second scan");
+        perform_scan(&db_path, Some(codex_home.to_string_lossy().to_string()))
+            .expect("second scan");
 
     let conn = open_connection(&db_path).expect("open db after second scan");
-    assert_eq!(session_usage_totals(&conn, session_id), (180, 40, 45, 225, 2));
+        assert_eq!(
+            session_usage_totals(&conn, session_id),
+            (180, 40, 45, 225, 2)
+        );
   }
 
   #[test]
@@ -1780,10 +1942,12 @@ mod tests {
 
     let parent_session_id = "77777777-7777-7777-7777-777777777777";
     let child_session_id = "88888888-8888-8888-8888-888888888888";
-    let parent_path =
-      sessions_dir.join(format!("rollout-2026-03-24T00-00-00-{parent_session_id}.jsonl"));
-    let child_path =
-      sessions_dir.join(format!("rollout-2026-03-24T00-05-00-{child_session_id}.jsonl"));
+        let parent_path = sessions_dir.join(format!(
+            "rollout-2026-03-24T00-00-00-{parent_session_id}.jsonl"
+        ));
+        let child_path = sessions_dir.join(format!(
+            "rollout-2026-03-24T00-05-00-{child_session_id}.jsonl"
+        ));
 
     write_session_file(
       &parent_path,
@@ -1808,8 +1972,14 @@ mod tests {
     perform_scan(&db_path, Some(codex_home.to_string_lossy().to_string())).expect("scan");
 
     let conn = open_connection(&db_path).expect("open db");
-    assert_eq!(session_usage_totals(&conn, parent_session_id), (260, 60, 65, 325, 3));
-    assert_eq!(session_usage_totals(&conn, child_session_id), (140, 20, 25, 165, 2));
+        assert_eq!(
+            session_usage_totals(&conn, parent_session_id),
+            (260, 60, 65, 325, 3)
+        );
+        assert_eq!(
+            session_usage_totals(&conn, child_session_id),
+            (140, 20, 25, 165, 2)
+        );
     assert_eq!(
       session_root_and_subagents(&conn, parent_session_id),
       Some((parent_session_id.to_string(), true))
@@ -1857,7 +2027,8 @@ mod tests {
       "{\"timestamp\":\"2026-03-24T00:00:00Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5.4\"}}\n",
     );
 
-    for (timestamp, input_tokens, cached_input_tokens, output_tokens, total_tokens) in snapshots {
+        for (timestamp, input_tokens, cached_input_tokens, output_tokens, total_tokens) in snapshots
+        {
       body.push_str(&format!(
         concat!(
           "{{\"timestamp\":\"{}\",\"type\":\"event_msg\",\"payload\":{{",
@@ -1869,11 +2040,7 @@ mod tests {
           "\"rate_limits\":{{\"plan_type\":\"pro\"}}",
           "}}}}\n"
         ),
-        timestamp,
-        input_tokens,
-        cached_input_tokens,
-        output_tokens,
-        total_tokens
+                timestamp, input_tokens, cached_input_tokens, output_tokens, total_tokens
       ));
     }
 
@@ -1886,7 +2053,10 @@ mod tests {
     parent_session_id: &str,
     snapshots: &[(&str, i64, i64, i64, i64)],
   ) {
-    let first_timestamp = snapshots.first().map(|item| item.0).unwrap_or("2026-03-24T00:00:00Z");
+        let first_timestamp = snapshots
+            .first()
+            .map(|item| item.0)
+            .unwrap_or("2026-03-24T00:00:00Z");
     let mut body = format!(
       concat!(
         "{{\"timestamp\":\"{}\",\"type\":\"session_meta\",\"payload\":{{",
@@ -1906,7 +2076,8 @@ mod tests {
       parent_session_id,
     );
 
-    for (timestamp, input_tokens, cached_input_tokens, output_tokens, total_tokens) in snapshots {
+        for (timestamp, input_tokens, cached_input_tokens, output_tokens, total_tokens) in snapshots
+        {
       body.push_str(&format!(
         concat!(
           "{{\"timestamp\":\"{}\",\"type\":\"event_msg\",\"payload\":{{",
@@ -1918,11 +2089,7 @@ mod tests {
           "\"rate_limits\":{{\"plan_type\":\"pro\"}}",
           "}}}}\n"
         ),
-        timestamp,
-        input_tokens,
-        cached_input_tokens,
-        output_tokens,
-        total_tokens
+                timestamp, input_tokens, cached_input_tokens, output_tokens, total_tokens
       ));
     }
 
@@ -1930,8 +2097,7 @@ mod tests {
   }
 
   fn session_root_and_subagents(conn: &Connection, session_id: &str) -> Option<(String, bool)> {
-    conn
-      .query_row(
+        conn.query_row(
         "SELECT root_session_id, contains_subagents FROM sessions WHERE session_id = ?1",
         params![session_id],
         |row| Ok((row.get(0)?, row.get::<_, i64>(1)? != 0)),
@@ -1940,9 +2106,11 @@ mod tests {
       .expect("query root and subagents")
   }
 
-  fn conversation_link(conn: &Connection, session_id: &str) -> Option<(String, Option<String>, i64)> {
-    conn
-      .query_row(
+    fn conversation_link(
+        conn: &Connection,
+        session_id: &str,
+    ) -> Option<(String, Option<String>, i64)> {
+        conn.query_row(
         "
         SELECT root_session_id, parent_session_id, depth
         FROM conversation_links
@@ -1956,8 +2124,7 @@ mod tests {
   }
 
   fn session_usage_totals(conn: &Connection, session_id: &str) -> (i64, i64, i64, i64, i64) {
-    conn
-      .query_row(
+        conn.query_row(
         "
         SELECT
           COALESCE(SUM(input_tokens), 0),
@@ -1969,14 +2136,21 @@ mod tests {
         WHERE session_id = ?1
         ",
         params![session_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
       )
       .expect("query usage totals")
   }
 
   fn session_source_state(conn: &Connection, session_id: &str) -> Option<String> {
-    conn
-      .query_row(
+        conn.query_row(
         "SELECT source_state FROM sessions WHERE session_id = ?1",
         params![session_id],
         |row| row.get(0),
@@ -1986,8 +2160,7 @@ mod tests {
   }
 
   fn import_state_session_id(conn: &Connection, path: &Path) -> Option<String> {
-    conn
-      .query_row(
+        conn.query_row(
         "SELECT session_id FROM import_state WHERE source_path = ?1",
         params![path.to_string_lossy().to_string()],
         |row| row.get(0),

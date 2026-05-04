@@ -1,6 +1,10 @@
 import { invoke, isTauri } from '@tauri-apps/api/core'
 
 import type {
+  CodexSource,
+  CodexSourceCandidate,
+  CodexSourceDownloadResult,
+  CodexSourceInput,
   ConversationFilters,
   ConversationListItem,
   LiveRateLimitSnapshot,
@@ -65,6 +69,30 @@ function createMockSubscriptionRecords(): SubscriptionRecord[] {
   return []
 }
 
+function createMockCodexSources(): CodexSource[] {
+  return [
+    {
+      id: 'local',
+      kind: 'local',
+      label: 'localhost',
+      sshAlias: null,
+      hostName: null,
+      user: null,
+      port: null,
+      remoteCodexHome: null,
+      localCodexHome: null,
+      selected: true,
+      status: 'ready',
+      lastDiscoveredAt: null,
+      lastDownloadedAt: null,
+      lastScannedAt: null,
+      lastError: null,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    },
+  ]
+}
+
 function createMockLiveRateLimits(): LiveRateLimitSnapshot {
   return {
     limitId: null,
@@ -123,6 +151,7 @@ function createMockOverview(
     quotaTrend: [],
     modelShares: [],
     compositionShares: [],
+    sourceShares: [],
     liveRateLimits: createMockLiveRateLimits(),
   }
 }
@@ -229,6 +258,7 @@ export async function getOverview(
   anchor?: string | null,
   customStart?: string | null,
   customEnd?: string | null,
+  sourceIds?: string[] | null,
 ): Promise<OverviewResponse> {
   return invokeOrMock(
     'getOverview',
@@ -238,6 +268,7 @@ export async function getOverview(
       customStart: bucket === 'custom' ? customStart ?? null : null,
       customEnd: bucket === 'custom' ? customEnd ?? null : null,
       liveWindowOffset: null,
+      sourceIds: sourceIds ?? null,
     },
     () => createMockOverview(bucket, anchor, customStart, customEnd),
   )
@@ -248,6 +279,7 @@ export async function loadDashboard(
   anchor?: string | null,
   search?: string | null,
   liveWindowOffset?: number | null,
+  sourceIds?: string[] | null,
   customStart?: string | null,
   customEnd?: string | null,
 ): Promise<import('./types').DashboardSnapshot> {
@@ -260,10 +292,12 @@ export async function loadDashboard(
       customEnd: bucket === 'custom' ? customEnd ?? null : null,
       search: search ?? null,
       liveWindowOffset: liveWindowOffset ?? null,
+      sourceIds: sourceIds ?? null,
     },
     () => ({
       overview: createMockOverview(bucket, anchor, customStart, customEnd),
       conversations: [] as ConversationListItem[],
+      codexSources: createMockCodexSources(),
       syncSettings: createMockSyncSettings(),
       subscriptionProfile: createMockSubscriptionProfile(),
       subscriptionRecords: createMockSubscriptionRecords(),
@@ -274,6 +308,81 @@ export async function loadDashboard(
 
 export async function listConversations(filters: ConversationFilters) {
   return invokeOrMock('listConversations', { filters }, () => [] satisfies ConversationListItem[])
+}
+
+export async function scanCodexSources(sourceIds?: string[] | null): Promise<import('./types').ScanResult[]> {
+  return invokeOrMock('scanCodexSources', { sourceIds: sourceIds ?? null }, () => [
+    {
+      codexHome: '~/.codex',
+      scannedFiles: 0,
+      importedSessions: 0,
+      updatedSessions: 0,
+      missingSessions: 0,
+      lastCompletedAt: nowIso(),
+    },
+  ])
+}
+
+export async function discoverSshCodexSources(): Promise<CodexSourceCandidate[]> {
+  return invokeOrMock('discoverSshCodexSources', {}, () => [])
+}
+
+export async function listCodexSources(): Promise<CodexSource[]> {
+  return invokeOrMock('listCodexSources', {}, createMockCodexSources)
+}
+
+export async function upsertCodexSource(payload: CodexSourceInput): Promise<CodexSource> {
+  return invokeOrMock('upsertCodexSource', { payload }, () => ({
+    id: `ssh_${payload.sshAlias.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}`,
+    kind: 'ssh',
+    label: payload.label,
+    sshAlias: payload.sshAlias,
+    hostName: payload.hostName,
+    user: payload.user,
+    port: payload.port,
+    remoteCodexHome: payload.remoteCodexHome,
+    localCodexHome: null,
+    selected: payload.selected,
+    status: 'idle',
+    lastDiscoveredAt: nowIso(),
+    lastDownloadedAt: null,
+    lastScannedAt: null,
+    lastError: null,
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  }))
+}
+
+export async function setCodexSourceSelected(sourceId: string, selected: boolean): Promise<CodexSource> {
+  return invokeOrMock('setCodexSourceSelected', { sourceId, selected }, () => ({
+    ...createMockCodexSources()[0],
+    id: sourceId,
+    selected,
+  }))
+}
+
+export async function deleteCodexSource(sourceId: string): Promise<CodexSource[]> {
+  return invokeOrMock('deleteCodexSource', { sourceId }, createMockCodexSources)
+}
+
+export async function downloadCodexSource(sourceId: string): Promise<CodexSourceDownloadResult> {
+  return invokeOrMock('downloadCodexSource', { sourceId }, () => ({
+    source: {
+      ...createMockCodexSources()[0],
+      id: sourceId,
+      kind: 'ssh',
+      status: 'ready',
+      lastDownloadedAt: nowIso(),
+    },
+    scanResult: {
+      codexHome: '~/.codex',
+      scannedFiles: 0,
+      importedSessions: 0,
+      updatedSessions: 0,
+      missingSessions: 0,
+      lastCompletedAt: nowIso(),
+    },
+  }))
 }
 
 export async function getLiveRateLimits(): Promise<LiveRateLimitSnapshot> {

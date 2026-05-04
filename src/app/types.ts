@@ -10,7 +10,7 @@ export type OverviewBucket =
   | 'total'
 
 export type ShareMode = 'value' | 'tokens'
-export type ShareDimension = 'model' | 'composition'
+export type ShareDimension = 'model' | 'composition' | 'source'
 export type AppView = 'overview' | 'conversations'
 export type MenuBarPopupModuleId =
   | 'api_value'
@@ -53,6 +53,59 @@ export interface SubscriptionProfile {
   monthlyPrice: number
   billingAnchorDay: number
   updatedAt: string
+}
+
+export interface CodexSource {
+  id: string
+  kind: string
+  label: string
+  sshAlias: string | null
+  hostName: string | null
+  user: string | null
+  port: number | null
+  remoteCodexHome: string | null
+  localCodexHome: string | null
+  selected: boolean
+  status: string
+  lastDiscoveredAt: string | null
+  lastDownloadedAt: string | null
+  lastScannedAt: string | null
+  lastError: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CodexSourceCandidate {
+  id: string
+  label: string
+  sshAlias: string
+  hostName: string | null
+  user: string | null
+  port: number | null
+  remoteCodexHome: string
+  ignoredReason: string | null
+}
+
+export interface CodexSourceInput {
+  label: string
+  sshAlias: string
+  hostName: string | null
+  user: string | null
+  port: number | null
+  remoteCodexHome: string
+  selected: boolean
+}
+
+export interface CodexSourceDownloadProgress {
+  sourceId: string
+  stage: string
+  progress: number | null
+  message: string
+}
+
+export interface CodexSourceDownloadResult {
+  source: CodexSource
+  scanResult: ScanResult
 }
 
 export interface SubscriptionRecord {
@@ -183,6 +236,15 @@ export interface CompositionShare {
   color: string
 }
 
+export interface SourceShare {
+  sourceId: string
+  displayName: string
+  apiValueUsd: number
+  totalTokens: number
+  conversationCount: number
+  color: string
+}
+
 export interface ShareSlice {
   id: string
   label: string
@@ -204,12 +266,14 @@ export interface OverviewResponse {
   quotaTrend: QuotaTrendPoint[]
   modelShares: ModelShare[]
   compositionShares: CompositionShare[]
+  sourceShares: SourceShare[]
   liveRateLimits: LiveRateLimitSnapshot | null
 }
 
 export interface DashboardSnapshot {
   overview: OverviewResponse
   conversations: ConversationListItem[]
+  codexSources: CodexSource[]
   syncSettings: SyncSettings
   subscriptionProfile: SubscriptionProfile
   subscriptionRecords: SubscriptionRecord[]
@@ -223,6 +287,7 @@ export interface ConversationFilters {
   customEnd?: string | null
   search?: string | null
   liveWindowOffset?: number | null
+  sourceIds?: string[] | null
 }
 
 export interface ConversationListItem {
@@ -303,4 +368,5 @@ export interface ConversationDetail {
   turns: ConversationTurnPoint[]
   modelBreakdown: ModelShare[]
   compositionBreakdown: CompositionShare[]
+  sourceBreakdown: SourceShare[]
 }

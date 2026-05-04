@@ -1,5 +1,6 @@
 CREATE TABLE IF NOT EXISTS sessions (
   session_id TEXT PRIMARY KEY,
+  source_id TEXT NOT NULL DEFAULT 'local',
   root_session_id TEXT NOT NULL,
   parent_session_id TEXT,
   title TEXT,
@@ -113,6 +114,7 @@ CREATE TABLE IF NOT EXISTS sync_settings (
 
 CREATE TABLE IF NOT EXISTS import_state (
   source_path TEXT PRIMARY KEY,
+  source_id TEXT NOT NULL DEFAULT 'local',
   session_id TEXT,
   source_bucket TEXT NOT NULL,
   file_size INTEGER NOT NULL,
@@ -122,6 +124,7 @@ CREATE TABLE IF NOT EXISTS import_state (
 
 CREATE TABLE IF NOT EXISTS rate_limit_samples (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id TEXT NOT NULL DEFAULT 'local',
   source_kind TEXT NOT NULL,
   source_session_id TEXT NOT NULL DEFAULT '',
   bucket TEXT NOT NULL,
@@ -134,4 +137,24 @@ CREATE TABLE IF NOT EXISTS rate_limit_samples (
   used_percent INTEGER NOT NULL,
   remaining_percent INTEGER NOT NULL,
   created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS codex_sources (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  label TEXT NOT NULL,
+  ssh_alias TEXT,
+  host_name TEXT,
+  user TEXT,
+  port INTEGER,
+  remote_codex_home TEXT,
+  local_codex_home TEXT,
+  selected INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'idle',
+  last_discovered_at TEXT,
+  last_downloaded_at TEXT,
+  last_scanned_at TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );

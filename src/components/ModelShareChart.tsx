@@ -60,6 +60,14 @@ export function ModelShareChart({
                 >
                   {t.charts.byStructure}
                 </button>
+                <button
+                  aria-pressed={dimension === 'source'}
+                  className={dimension === 'source' ? 'active' : ''}
+                  onClick={() => onDimensionChange('source')}
+                  type="button"
+                >
+                  {t.charts.bySource}
+                </button>
               </div>
             </div>
           ) : null}

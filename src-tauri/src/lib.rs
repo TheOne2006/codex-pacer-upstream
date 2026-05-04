@@ -4,6 +4,7 @@ mod models;
 mod pricing;
 mod queries;
 mod rate_limits;
+mod sources;
 
 use std::fs;
 use std::path::PathBuf;
@@ -14,29 +15,34 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Duration as ChronoDuration, Local};
-use rusqlite::params;
 use database::{
-  canonical_subscription_currency, create_subscription_record, delete_subscription_record,
+    canonical_subscription_currency, create_subscription_record,
+    delete_codex_source as delete_codex_source_record, delete_subscription_record,
   get_subscription_profile, get_sync_settings, init_db, insert_live_rate_limit_snapshot,
-  list_subscription_records, open_connection, save_subscription_profile, save_sync_settings,
-  update_subscription_record,
+    list_codex_sources, list_subscription_records, open_connection, save_subscription_profile,
+    save_sync_settings, set_codex_source_selected, update_subscription_record,
+    upsert_ssh_codex_source,
 };
-use importer::{perform_scan, recalculate_all_session_values};
+use importer::{perform_scan, perform_scan_for_source, recalculate_all_session_values};
 use models::{
+    CodexSource, CodexSourceCandidate, CodexSourceDownloadResult, CodexSourceInput,
   ConversationDetail, ConversationFilters, ConversationListItem, DashboardSnapshot,
   LiveRateLimitSnapshot, MenuBarPopupQuotaSnapshot, MenuBarPopupSnapshot,
   MenuBarPopupSuggestedSpeed, OverviewResponse, PricingCatalogEntry, RateLimitWindowSnapshot,
   ScanResult, SubscriptionProfile, SubscriptionRecord, SubscriptionRecordInput, SyncSettings,
 };
 use pricing::{load_catalog, refresh_pricing_catalog_from_openai, seed_pricing_catalog};
-use queries::{get_conversation_detail, get_overview, get_quota_trend, list_conversations, load_dashboard_data};
+use queries::{
+    get_conversation_detail, get_overview, get_quota_trend, list_conversations, load_dashboard_data,
+};
 use rate_limits::query_live_rate_limits;
+use rusqlite::params;
+use sources::{discover_ssh_codex_sources, download_codex_source, source_cache_codex_home};
 use tauri::{
-  Emitter, Manager, Monitor, PhysicalPosition, PhysicalSize, Position, Rect, WebviewUrl, WebviewWindow,
-  WebviewWindowBuilder,
   menu::{Menu, MenuItem, PredefinedMenuItem},
   tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
-  AppHandle, State,
+    AppHandle, Emitter, Manager, Monitor, PhysicalPosition, PhysicalSize, Position, Rect, State,
+    WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 
 const DAILY_VALUE_TRAY_ID: &str = "daily-api-value";
@@ -68,6 +74,7 @@ struct MenuBarPopupAnchor {
 #[derive(Clone)]
 struct AppState {
   db_path: PathBuf,
+    app_data_dir: PathBuf,
   scan_in_progress: Arc<AtomicBool>,
   daily_value_tray: Option<TrayIcon>,
   live_rate_limits: Arc<Mutex<Option<CachedRateLimitSnapshot>>>,
@@ -76,8 +83,20 @@ struct AppState {
 
 #[allow(non_snake_case)]
 #[tauri::command(rename_all = "camelCase")]
-fn scanCodexUsage(state: State<'_, AppState>, codex_home: Option<String>) -> Result<ScanResult, String> {
+fn scanCodexUsage(
+    state: State<'_, AppState>,
+    codex_home: Option<String>,
+) -> Result<ScanResult, String> {
   run_scan_if_idle(state.inner().clone(), codex_home)
+}
+
+#[allow(non_snake_case)]
+#[tauri::command(rename_all = "camelCase")]
+fn scanCodexSources(
+    state: State<'_, AppState>,
+    source_ids: Option<Vec<String>>,
+) -> Result<Vec<ScanResult>, String> {
+    run_source_scan_if_idle(state.inner().clone(), source_ids)
 }
 
 #[allow(non_snake_case)]
@@ -106,8 +125,10 @@ fn getOverview(
   custom_start: Option<String>,
   custom_end: Option<String>,
   live_window_offset: Option<i64>,
+    source_ids: Option<Vec<String>>,
 ) -> Result<OverviewResponse, String> {
-  let live_rate_limits = maybe_live_rate_limits_for_bucket(state.inner(), bucket.as_deref(), live_window_offset)?;
+    let live_rate_limits =
+        maybe_live_rate_limits_for_bucket(state.inner(), bucket.as_deref(), live_window_offset)?;
   get_overview(
     &state.db_path,
     bucket,
@@ -116,6 +137,7 @@ fn getOverview(
     custom_end,
     live_rate_limits,
     live_window_offset,
+        source_ids,
   )
 }
 
@@ -150,13 +172,22 @@ fn getMenuBarPopupSnapshot(
 
 #[allow(non_snake_case)]
 #[tauri::command(rename_all = "camelCase")]
-fn resizeMenuBarPopup(app: AppHandle, state: State<'_, AppState>, height: f64) -> Result<bool, String> {
+fn resizeMenuBarPopup(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    height: f64,
+) -> Result<bool, String> {
   let Some(window) = app.get_webview_window(MENU_BAR_POPUP_WINDOW_LABEL) else {
     return Ok(false);
   };
   let (height, position) = match latest_menu_bar_popup_anchor(state.inner()) {
-    Some(anchor) => menu_bar_popup_geometry(&window, anchor.rect, anchor.click_position, height)?,
-    None => (height.clamp(MENU_BAR_POPUP_MIN_HEIGHT, MENU_BAR_POPUP_MAX_HEIGHT), None),
+        Some(anchor) => {
+            menu_bar_popup_geometry(&window, anchor.rect, anchor.click_position, height)?
+        }
+        None => (
+            height.clamp(MENU_BAR_POPUP_MIN_HEIGHT, MENU_BAR_POPUP_MAX_HEIGHT),
+            None,
+        ),
   };
   window
     .set_size(tauri::Size::Logical(tauri::LogicalSize::new(
@@ -182,12 +213,18 @@ async fn loadDashboard(
   custom_end: Option<String>,
   search: Option<String>,
   live_window_offset: Option<i64>,
+    source_ids: Option<Vec<String>>,
 ) -> Result<DashboardSnapshot, String> {
   let state = state.inner().clone();
   tauri::async_runtime::spawn_blocking(move || {
-    let normalized_bucket = bucket.clone().unwrap_or_else(|| "subscription_month".to_string());
-    let live_rate_limits =
-      maybe_live_rate_limits_for_bucket(&state, Some(&normalized_bucket), live_window_offset)?;
+        let normalized_bucket = bucket
+            .clone()
+            .unwrap_or_else(|| "subscription_month".to_string());
+        let live_rate_limits = maybe_live_rate_limits_for_bucket(
+            &state,
+            Some(&normalized_bucket),
+            live_window_offset,
+        )?;
     let snapshot = load_dashboard_data(
       &state.db_path,
       Some(normalized_bucket.clone()),
@@ -197,13 +234,16 @@ async fn loadDashboard(
       search,
       live_rate_limits.clone(),
       live_window_offset,
+            source_ids,
     )?;
     let conn = open_connection(&state.db_path).map_err(|error| error.to_string())?;
     let sync_settings = get_sync_settings(&conn).map_err(|error| error.to_string())?;
+        let codex_sources = list_codex_sources(&conn).map_err(|error| error.to_string())?;
 
     Ok(DashboardSnapshot {
       overview: snapshot.overview,
       conversations: snapshot.conversations,
+            codex_sources,
       sync_settings,
       subscription_profile: snapshot.subscription_profile,
       subscription_records: snapshot.subscription_records,
@@ -212,6 +252,105 @@ async fn loadDashboard(
   })
   .await
   .map_err(|error| format!("Failed to load dashboard: {error}"))?
+}
+
+#[allow(non_snake_case)]
+#[tauri::command]
+fn discoverSshCodexSources() -> Vec<CodexSourceCandidate> {
+    discover_ssh_codex_sources()
+}
+
+#[allow(non_snake_case)]
+#[tauri::command]
+fn listCodexSources(state: State<'_, AppState>) -> Result<Vec<CodexSource>, String> {
+    let conn = open_connection(&state.inner().db_path).map_err(|error| error.to_string())?;
+    list_codex_sources(&conn).map_err(|error| error.to_string())
+}
+
+#[allow(non_snake_case)]
+#[tauri::command(rename_all = "camelCase")]
+fn upsertCodexSource(
+    state: State<'_, AppState>,
+    payload: CodexSourceInput,
+) -> Result<CodexSource, String> {
+    let source_id = format!(
+        "ssh_{}",
+        payload
+            .ssh_alias
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() {
+                    character.to_ascii_lowercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>()
+            .split('_')
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("_")
+    );
+    let cache_home = source_cache_codex_home(&state.inner().app_data_dir, &source_id)
+        .to_string_lossy()
+        .to_string();
+    let conn = open_connection(&state.inner().db_path).map_err(|error| error.to_string())?;
+    upsert_ssh_codex_source(&conn, &source_id, &payload, &cache_home)
+        .map_err(|error| error.to_string())
+}
+
+#[allow(non_snake_case)]
+#[tauri::command(rename_all = "camelCase")]
+fn setCodexSourceSelected(
+    state: State<'_, AppState>,
+    source_id: String,
+    selected: bool,
+) -> Result<CodexSource, String> {
+    let conn = open_connection(&state.inner().db_path).map_err(|error| error.to_string())?;
+    set_codex_source_selected(&conn, &source_id, selected).map_err(|error| error.to_string())
+}
+
+#[allow(non_snake_case)]
+#[tauri::command(rename_all = "camelCase")]
+fn deleteCodexSource(
+    state: State<'_, AppState>,
+    source_id: String,
+) -> Result<Vec<CodexSource>, String> {
+    if source_id == "local" {
+        return Err("localhost cannot be deleted.".to_string());
+    }
+
+    let source_root = source_cache_codex_home(&state.inner().app_data_dir, &source_id)
+        .parent()
+        .map(|path| path.to_path_buf());
+    let mut conn = open_connection(&state.inner().db_path).map_err(|error| error.to_string())?;
+    let deleted =
+        delete_codex_source_record(&mut conn, &source_id).map_err(|error| error.to_string())?;
+    if !deleted {
+        return Err("Source not found.".to_string());
+    }
+    if let Some(path) = source_root {
+        if path.exists() {
+            fs::remove_dir_all(&path)
+                .map_err(|error| format!("Deleted source but failed to remove cache: {error}"))?;
+        }
+    }
+    list_codex_sources(&conn).map_err(|error| error.to_string())
+}
+
+#[allow(non_snake_case)]
+#[tauri::command(rename_all = "camelCase")]
+async fn downloadCodexSource(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    source_id: String,
+) -> Result<CodexSourceDownloadResult, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        download_codex_source(&app, &state.db_path, &state.app_data_dir, &source_id)
+    })
+    .await
+    .map_err(|error| format!("Failed to download Codex source: {error}"))?
 }
 
 #[allow(non_snake_case)]
@@ -239,8 +378,7 @@ fn handleMenuBarPopupAction(
     "open_settings" => {
       hide_menu_bar_popup(&app);
       show_main_window(&app);
-      app
-        .emit_to(MAIN_WINDOW_LABEL, MENU_BAR_POPUP_OPEN_SETTINGS_EVENT, ())
+            app.emit_to(MAIN_WINDOW_LABEL, MENU_BAR_POPUP_OPEN_SETTINGS_EVENT, ())
         .map_err(|error| error.to_string())?;
       Ok(true)
     }
@@ -277,20 +415,39 @@ fn updateSyncSettings(
     codex_home: payload.codex_home,
     auto_scan_enabled: payload.auto_scan_enabled,
     auto_scan_interval_minutes: payload.auto_scan_interval_minutes.max(1),
-    live_quota_refresh_interval_seconds: payload.live_quota_refresh_interval_seconds.clamp(60, 3600),
+        live_quota_refresh_interval_seconds: payload
+            .live_quota_refresh_interval_seconds
+            .clamp(60, 3600),
     hide_dock_icon_when_menu_bar_visible: payload.hide_dock_icon_when_menu_bar_visible,
     show_menu_bar_logo: payload.show_menu_bar_logo,
     show_menu_bar_daily_api_value: payload.show_menu_bar_daily_api_value,
     show_menu_bar_live_quota_percent: payload.show_menu_bar_live_quota_percent,
-    menu_bar_live_quota_metric: normalize_menu_bar_live_quota_metric(&payload.menu_bar_live_quota_metric),
-    menu_bar_live_quota_bucket: normalize_menu_bar_live_quota_bucket(&payload.menu_bar_live_quota_bucket),
+        menu_bar_live_quota_metric: normalize_menu_bar_live_quota_metric(
+            &payload.menu_bar_live_quota_metric,
+        ),
+        menu_bar_live_quota_bucket: normalize_menu_bar_live_quota_bucket(
+            &payload.menu_bar_live_quota_bucket,
+        ),
     menu_bar_bucket: normalize_menu_bar_bucket(&payload.menu_bar_bucket),
     menu_bar_speed_show_emoji: payload.menu_bar_speed_show_emoji,
-    menu_bar_speed_fast_threshold_percent: payload.menu_bar_speed_fast_threshold_percent.clamp(0, 1000),
-    menu_bar_speed_slow_threshold_percent: payload.menu_bar_speed_slow_threshold_percent.clamp(0, 1000),
-    menu_bar_speed_healthy_emoji: normalize_menu_bar_speed_emoji(&payload.menu_bar_speed_healthy_emoji, "🟢"),
-    menu_bar_speed_fast_emoji: normalize_menu_bar_speed_emoji(&payload.menu_bar_speed_fast_emoji, "🔥"),
-    menu_bar_speed_slow_emoji: normalize_menu_bar_speed_emoji(&payload.menu_bar_speed_slow_emoji, "🐢"),
+        menu_bar_speed_fast_threshold_percent: payload
+            .menu_bar_speed_fast_threshold_percent
+            .clamp(0, 1000),
+        menu_bar_speed_slow_threshold_percent: payload
+            .menu_bar_speed_slow_threshold_percent
+            .clamp(0, 1000),
+        menu_bar_speed_healthy_emoji: normalize_menu_bar_speed_emoji(
+            &payload.menu_bar_speed_healthy_emoji,
+            "🟢",
+        ),
+        menu_bar_speed_fast_emoji: normalize_menu_bar_speed_emoji(
+            &payload.menu_bar_speed_fast_emoji,
+            "🔥",
+        ),
+        menu_bar_speed_slow_emoji: normalize_menu_bar_speed_emoji(
+            &payload.menu_bar_speed_slow_emoji,
+            "🐢",
+        ),
     menu_bar_popup_enabled: payload.menu_bar_popup_enabled,
     menu_bar_popup_modules: normalize_menu_bar_popup_modules(&payload.menu_bar_popup_modules),
     menu_bar_popup_show_reset_timeline: payload.menu_bar_popup_show_reset_timeline,
@@ -379,6 +536,60 @@ fn run_scan_if_idle(state: AppState, codex_home: Option<String>) -> Result<ScanR
   result
 }
 
+fn run_source_scan_if_idle(
+    state: AppState,
+    source_ids: Option<Vec<String>>,
+) -> Result<Vec<ScanResult>, String> {
+    if state
+        .scan_in_progress
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("A scan is already running.".to_string());
+    }
+
+    let result = (|| {
+        let conn = open_connection(&state.db_path).map_err(|error| error.to_string())?;
+        let sources = list_codex_sources(&conn).map_err(|error| error.to_string())?;
+        let requested = source_ids.unwrap_or_else(|| {
+            sources
+                .iter()
+                .filter(|source| source.selected)
+                .map(|source| source.id.clone())
+                .collect()
+        });
+        let requested = requested
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+        let mut results = Vec::new();
+        for source in sources {
+            if !requested.contains(&source.id) {
+                continue;
+            }
+            let codex_home = if source.id == "local" {
+                None
+            } else {
+                source.local_codex_home.clone()
+            };
+            if source.id != "local" && codex_home.is_none() {
+                continue;
+            }
+            results.push(perform_scan_for_source(
+                &state.db_path,
+                &source.id,
+                codex_home,
+            )?);
+        }
+        Ok(results)
+    })();
+
+    state.scan_in_progress.store(false, Ordering::SeqCst);
+    if result.is_ok() {
+        refresh_daily_value_menu_bar(&state);
+    }
+    result
+}
+
 fn refresh_daily_value_menu_bar(state: &AppState) {
   if let Err(error) = update_daily_value_menu_bar(state) {
     log::warn!("Failed to update menu bar display: {error}");
@@ -400,13 +611,18 @@ fn update_daily_value_menu_bar(state: &AppState) -> Result<(), String> {
   apply_menu_bar_icon(tray, settings.show_menu_bar_logo)?;
   let (api_value_title, live_metric_title) = current_menu_bar_title_parts(state, &settings)?;
   match menu_bar_title(api_value_title.as_deref(), live_metric_title.as_deref()) {
-    Some(title) => tray.set_title(Some(&title)).map_err(|error| error.to_string())?,
+        Some(title) => tray
+            .set_title(Some(&title))
+            .map_err(|error| error.to_string())?,
     None => tray
       .set_title(None::<String>)
       .map_err(|error| error.to_string())?,
   }
-  tray
-    .set_tooltip(Some(menu_bar_tooltip(&settings, api_value_title.as_deref(), state)?))
+    tray.set_tooltip(Some(menu_bar_tooltip(
+        &settings,
+        api_value_title.as_deref(),
+        state,
+    )?))
     .map_err(|error| error.to_string())?;
   tray.set_visible(true).map_err(|error| error.to_string())?;
   Ok(())
@@ -441,10 +657,10 @@ fn apply_dock_icon_visibility(_: &AppHandle, _: &SyncSettings, _: bool) {}
 fn apply_menu_bar_icon(tray: &TrayIcon, show_logo: bool) -> Result<(), String> {
   if show_logo {
     if let Some(icon) = tray.app_handle().default_window_icon().cloned() {
-      tray.set_icon(Some(icon)).map_err(|error| error.to_string())?;
+            tray.set_icon(Some(icon))
+                .map_err(|error| error.to_string())?;
       #[cfg(target_os = "macos")]
-      tray
-        .set_icon_as_template(true)
+            tray.set_icon_as_template(true)
         .map_err(|error| error.to_string())?;
     }
   } else {
@@ -470,11 +686,16 @@ fn current_menu_bar_title_parts(
     let overview = get_overview(
       &state.db_path,
       Some(bucket.clone()),
-      if bucket_uses_anchor(&bucket) { Some(anchor) } else { None },
+            if bucket_uses_anchor(&bucket) {
+                Some(anchor)
+            } else {
+                None
+            },
       None,
       None,
       live_rate_limits.clone(),
       None,
+            None,
     )?;
     Some(format!("${:.1}", overview.stats.api_value_usd))
   } else {
@@ -495,7 +716,10 @@ fn current_menu_bar_title_parts(
   Ok((api_value_title, live_metric_title))
 }
 
-fn menu_bar_title(api_value_title: Option<&str>, live_metric_title: Option<&str>) -> Option<String> {
+fn menu_bar_title(
+    api_value_title: Option<&str>,
+    live_metric_title: Option<&str>,
+) -> Option<String> {
   let mut segments = Vec::new();
   if let Some(value) = api_value_title.filter(|value| !value.trim().is_empty()) {
     segments.push(value.to_string());
@@ -512,9 +736,8 @@ fn menu_bar_title(api_value_title: Option<&str>, live_metric_title: Option<&str>
 
 fn normalize_menu_bar_bucket(bucket: &str) -> String {
   match bucket {
-    "day" | "week" | "five_hour" | "seven_day" | "subscription_month" | "month" | "year" | "total" => {
-      bucket.to_string()
-    }
+        "day" | "week" | "five_hour" | "seven_day" | "subscription_month" | "month" | "year"
+        | "total" => bucket.to_string(),
     _ => "day".to_string(),
   }
 }
@@ -570,7 +793,10 @@ fn menu_bar_tooltip(
   let bucket = normalize_menu_bar_bucket(&settings.menu_bar_bucket);
   let mut fragments = Vec::new();
   if let Some(title) = api_value_title.filter(|value| !value.trim().is_empty()) {
-    fragments.push(format!("{}累计 API 价值：{title}", menu_bar_bucket_label(&bucket)));
+        fragments.push(format!(
+            "{}累计 API 价值：{title}",
+            menu_bar_bucket_label(&bucket)
+        ));
   }
   if settings.show_menu_bar_live_quota_percent {
     let snapshot = get_live_rate_limits_cached(state)?;
@@ -624,7 +850,9 @@ fn menu_bar_live_quota_snapshot(
     Some(snapshot) => snapshot,
     None => get_live_rate_limits_cached(state)?,
   };
-  Ok(menu_bar_live_quota_title(&snapshot, settings, bucket, metric, now))
+    Ok(menu_bar_live_quota_title(
+        &snapshot, settings, bucket, metric, now,
+    ))
 }
 
 fn selected_menu_bar_live_quota_window<'a>(
@@ -673,7 +901,10 @@ fn menu_bar_live_quota_tooltip(
         velocity.remaining_time_percent,
       ))
     }
-    _ => Some(format!("{label}剩余 {}%", window.remaining_percent.clamp(0, 100))),
+        _ => Some(format!(
+            "{label}剩余 {}%",
+            window.remaining_percent.clamp(0, 100)
+        )),
   }
 }
 
@@ -706,10 +937,15 @@ fn suggested_usage_velocity(
   }
 
   let remaining_seconds = reset_at.signed_duration_since(now).num_seconds() as f64;
-  let remaining_time_percent = ((remaining_seconds / total_seconds as f64) * 100.0).clamp(0.0, 100.0);
+    let remaining_time_percent =
+        ((remaining_seconds / total_seconds as f64) * 100.0).clamp(0.0, 100.0);
   let remaining_percent = window.remaining_percent.clamp(0, 100) as f64;
   let ratio = if remaining_time_percent <= 0.0 {
-    if remaining_percent <= 0.0 { 1.0 } else { 10.0 }
+        if remaining_percent <= 0.0 {
+            1.0
+        } else {
+            10.0
+        }
   } else {
     remaining_percent / remaining_time_percent
   };
@@ -721,11 +957,17 @@ fn suggested_usage_velocity(
     format!("{percent:.0}%")
   };
 
-  let fast_threshold = settings.menu_bar_speed_fast_threshold_percent.clamp(0, 1000) as f64;
+    let fast_threshold = settings
+        .menu_bar_speed_fast_threshold_percent
+        .clamp(0, 1000) as f64;
   let slow_threshold = settings
     .menu_bar_speed_slow_threshold_percent
     .clamp(0, 1000)
-    .max(settings.menu_bar_speed_fast_threshold_percent.clamp(0, 1000)) as f64;
+        .max(
+            settings
+                .menu_bar_speed_fast_threshold_percent
+                .clamp(0, 1000),
+        ) as f64;
 
   Some(SuggestedUsageVelocityDisplay {
     emoji: usage_velocity_emoji(percent, fast_threshold, slow_threshold, settings),
@@ -751,7 +993,9 @@ fn usage_velocity_emoji(
   }
 }
 
-fn quota_window_bounds(window: &RateLimitWindowSnapshot) -> Option<(DateTime<Local>, DateTime<Local>)> {
+fn quota_window_bounds(
+    window: &RateLimitWindowSnapshot,
+) -> Option<(DateTime<Local>, DateTime<Local>)> {
   let reset_at = window.resets_at.as_deref().and_then(parse_rfc3339_local)?;
   let window_start = match window.window_start.as_deref().and_then(parse_rfc3339_local) {
     Some(timestamp) => timestamp,
@@ -787,7 +1031,10 @@ fn get_live_rate_limits_cached(state: &AppState) -> Result<LiveRateLimitSnapshot
   get_live_rate_limits(state, false)
 }
 
-fn get_live_rate_limits(state: &AppState, force_refresh: bool) -> Result<LiveRateLimitSnapshot, String> {
+fn get_live_rate_limits(
+    state: &AppState,
+    force_refresh: bool,
+) -> Result<LiveRateLimitSnapshot, String> {
   let ttl = live_rate_limit_cache_ttl(state);
 
   if !force_refresh {
@@ -929,15 +1176,27 @@ fn load_persisted_live_rate_limits_for_source(
     limit_id: primary
       .as_ref()
       .and_then(|window| window.limit_id.clone())
-      .or_else(|| secondary.as_ref().and_then(|window| window.limit_id.clone())),
+            .or_else(|| {
+                secondary
+                    .as_ref()
+                    .and_then(|window| window.limit_id.clone())
+            }),
     limit_name: primary
       .as_ref()
       .and_then(|window| window.limit_name.clone())
-      .or_else(|| secondary.as_ref().and_then(|window| window.limit_name.clone())),
+            .or_else(|| {
+                secondary
+                    .as_ref()
+                    .and_then(|window| window.limit_name.clone())
+            }),
     plan_type: primary
       .as_ref()
       .and_then(|window| window.plan_type.clone())
-      .or_else(|| secondary.as_ref().and_then(|window| window.plan_type.clone())),
+            .or_else(|| {
+                secondary
+                    .as_ref()
+                    .and_then(|window| window.plan_type.clone())
+            }),
     primary: primary.map(|window| window.snapshot),
     secondary: secondary.map(|window| window.snapshot),
     fetched_at,
@@ -979,7 +1238,10 @@ fn get_cached_live_rate_limits(state: &AppState) -> Option<LiveRateLimitSnapshot
     .and_then(|cache| cache.as_ref().map(|snapshot| snapshot.snapshot.clone()))
 }
 
-fn store_live_rate_limits_cache(state: &AppState, snapshot: &LiveRateLimitSnapshot) -> Result<(), String> {
+fn store_live_rate_limits_cache(
+    state: &AppState,
+    snapshot: &LiveRateLimitSnapshot,
+) -> Result<(), String> {
   let mut cache = state
     .live_rate_limits
     .lock()
@@ -991,7 +1253,10 @@ fn store_live_rate_limits_cache(state: &AppState, snapshot: &LiveRateLimitSnapsh
   Ok(())
 }
 
-fn best_effort_live_rate_limits(state: &AppState, force_refresh: bool) -> Option<LiveRateLimitSnapshot> {
+fn best_effort_live_rate_limits(
+    state: &AppState,
+    force_refresh: bool,
+) -> Option<LiveRateLimitSnapshot> {
   match get_live_rate_limits(state, force_refresh) {
     Ok(snapshot) => Some(snapshot),
     Err(error) => {
@@ -1013,7 +1278,8 @@ fn build_menu_bar_popup_snapshot(
     get_live_rate_limits_local(state)
   };
   let selected_bucket = normalize_menu_bar_bucket(&settings.menu_bar_bucket);
-  let anchor = bucket_uses_anchor(&selected_bucket).then(|| Local::now().format("%Y-%m-%d").to_string());
+    let anchor =
+        bucket_uses_anchor(&selected_bucket).then(|| Local::now().format("%Y-%m-%d").to_string());
   let overview = get_overview(
     &state.db_path,
     Some(selected_bucket.clone()),
@@ -1026,6 +1292,7 @@ fn build_menu_bar_popup_snapshot(
       None
     },
     None,
+        None,
   )
   .ok();
   let quota_trend_7d = if selected_bucket == "seven_day" {
@@ -1034,7 +1301,12 @@ fn build_menu_bar_popup_snapshot(
       .map(|value| value.quota_trend.clone())
       .unwrap_or_default()
   } else {
-    get_quota_trend(&state.db_path, "seven_day".to_string(), live_rate_limits.clone()).unwrap_or_default()
+        get_quota_trend(
+            &state.db_path,
+            "seven_day".to_string(),
+            live_rate_limits.clone(),
+        )
+        .unwrap_or_default()
   };
 
   Ok(MenuBarPopupSnapshot {
@@ -1044,9 +1316,12 @@ fn build_menu_bar_popup_snapshot(
     quota_5h: live_rate_limits
       .as_ref()
       .and_then(|snapshot| snapshot.primary.as_ref().map(menu_bar_popup_quota_snapshot)),
-    quota_7d: live_rate_limits
+        quota_7d: live_rate_limits.as_ref().and_then(|snapshot| {
+            snapshot
+                .secondary
       .as_ref()
-      .and_then(|snapshot| snapshot.secondary.as_ref().map(menu_bar_popup_quota_snapshot)),
+                .map(menu_bar_popup_quota_snapshot)
+        }),
     quota_trend_7d,
     suggested_speed_7d: live_rate_limits
       .as_ref()
@@ -1054,15 +1329,26 @@ fn build_menu_bar_popup_snapshot(
       .and_then(|window| menu_bar_popup_suggested_speed(window, &settings, Local::now())),
     speed_fast_threshold_percent: settings.menu_bar_speed_fast_threshold_percent,
     speed_slow_threshold_percent: settings.menu_bar_speed_slow_threshold_percent,
-    api_value_selected_bucket: overview.as_ref().map(|value| value.stats.api_value_usd).unwrap_or(0.0),
-    total_tokens_selected_bucket: overview.as_ref().map(|value| value.stats.total_tokens).unwrap_or(0),
+        api_value_selected_bucket: overview
+            .as_ref()
+            .map(|value| value.stats.api_value_usd)
+            .unwrap_or(0.0),
+        total_tokens_selected_bucket: overview
+            .as_ref()
+            .map(|value| value.stats.total_tokens)
+            .unwrap_or(0),
     conversation_count_selected_bucket: overview
       .as_ref()
       .map(|value| value.stats.conversation_count)
       .unwrap_or(0),
-    payoff_ratio: overview.as_ref().map(|value| value.stats.payoff_ratio).unwrap_or(0.0),
+        payoff_ratio: overview
+            .as_ref()
+            .map(|value| value.stats.payoff_ratio)
+            .unwrap_or(0.0),
     last_scan_completed_at: settings.last_scan_completed_at,
-    live_quota_fetched_at: live_rate_limits.as_ref().map(|snapshot| snapshot.fetched_at.clone()),
+        live_quota_fetched_at: live_rate_limits
+            .as_ref()
+            .map(|snapshot| snapshot.fetched_at.clone()),
     visible_modules: normalize_menu_bar_popup_modules(&settings.menu_bar_popup_modules),
     show_reset_timeline: settings.menu_bar_popup_show_reset_timeline,
     show_actions: settings.menu_bar_popup_show_actions,
@@ -1085,11 +1371,17 @@ fn menu_bar_popup_suggested_speed(
   now: DateTime<Local>,
 ) -> Option<MenuBarPopupSuggestedSpeed> {
   let velocity = suggested_usage_velocity(window, now, settings)?;
-  let fast_threshold = settings.menu_bar_speed_fast_threshold_percent.clamp(0, 1000) as f64;
+    let fast_threshold = settings
+        .menu_bar_speed_fast_threshold_percent
+        .clamp(0, 1000) as f64;
   let slow_threshold = settings
     .menu_bar_speed_slow_threshold_percent
     .clamp(0, 1000)
-    .max(settings.menu_bar_speed_fast_threshold_percent.clamp(0, 1000)) as f64;
+        .max(
+            settings
+                .menu_bar_speed_fast_threshold_percent
+                .clamp(0, 1000),
+        ) as f64;
   let percent = velocity_ratio_percent(window, now);
 
   Some(MenuBarPopupSuggestedSpeed {
@@ -1112,11 +1404,17 @@ fn velocity_ratio_percent(window: &RateLimitWindowSnapshot, now: DateTime<Local>
   }
 
   let remaining_seconds = reset_at.signed_duration_since(now).num_seconds() as f64;
-  let remaining_time_percent = ((remaining_seconds / total_seconds as f64) * 100.0).clamp(0.0, 100.0);
+    let remaining_time_percent =
+        ((remaining_seconds / total_seconds as f64) * 100.0).clamp(0.0, 100.0);
   if remaining_time_percent <= 0.0 {
-    if window.remaining_percent <= 0 { 100.0 } else { 1000.0 }
+        if window.remaining_percent <= 0 {
+            100.0
   } else {
-    ((window.remaining_percent.clamp(0, 100) as f64 / remaining_time_percent) * 100.0).clamp(0.0, 1000.0)
+            1000.0
+        }
+    } else {
+        ((window.remaining_percent.clamp(0, 100) as f64 / remaining_time_percent) * 100.0)
+            .clamp(0.0, 1000.0)
   }
 }
 
@@ -1134,7 +1432,9 @@ fn live_rate_limit_cache_ttl(state: &AppState) -> Duration {
   open_connection(&state.db_path)
     .ok()
     .and_then(|conn| get_sync_settings(&conn).ok())
-    .map(|settings| Duration::from_secs(settings.live_quota_refresh_interval_seconds.clamp(60, 3600) as u64))
+        .map(|settings| {
+            Duration::from_secs(settings.live_quota_refresh_interval_seconds.clamp(60, 3600) as u64)
+        })
     .unwrap_or(Duration::from_secs(300))
 }
 
@@ -1143,7 +1443,11 @@ fn build_menu_bar_popup_window(app: &AppHandle) -> Result<WebviewWindow, String>
     return Ok(window);
   }
 
-  WebviewWindowBuilder::new(app, MENU_BAR_POPUP_WINDOW_LABEL, WebviewUrl::App("index.html".into()))
+    WebviewWindowBuilder::new(
+        app,
+        MENU_BAR_POPUP_WINDOW_LABEL,
+        WebviewUrl::App("index.html".into()),
+    )
     .title("Codex Pacer Popup")
     .inner_size(MENU_BAR_POPUP_WIDTH, MENU_BAR_POPUP_INITIAL_HEIGHT)
     .resizable(false)
@@ -1201,7 +1505,9 @@ fn position_menu_bar_popup(
   rect: Rect,
   click_position: PhysicalPosition<f64>,
 ) -> Result<(), String> {
-  if let (_, Some(position)) = menu_bar_popup_geometry(window, rect, click_position, MENU_BAR_POPUP_INITIAL_HEIGHT)? {
+    if let (_, Some(position)) =
+        menu_bar_popup_geometry(window, rect, click_position, MENU_BAR_POPUP_INITIAL_HEIGHT)?
+    {
     return window
       .set_position(Position::Physical(position))
       .map_err(|error| error.to_string());
@@ -1241,10 +1547,17 @@ fn menu_bar_popup_geometry(
   Ok((geometry.height, Some(geometry.position)))
 }
 
-fn store_menu_bar_popup_anchor(state: &AppState, rect: Rect, click_position: PhysicalPosition<f64>) {
+fn store_menu_bar_popup_anchor(
+    state: &AppState,
+    rect: Rect,
+    click_position: PhysicalPosition<f64>,
+) {
   match state.menu_bar_popup_anchor.lock() {
     Ok(mut anchor) => {
-      *anchor = Some(MenuBarPopupAnchor { rect, click_position });
+            *anchor = Some(MenuBarPopupAnchor {
+                rect,
+                click_position,
+            });
     }
     Err(_) => {
       log::warn!("Failed to store tray popup anchor.");
@@ -1279,7 +1592,9 @@ fn tray_event_monitor(
   rect: Rect,
   click_position: PhysicalPosition<f64>,
 ) -> Result<Option<Monitor>, String> {
-  let monitors = window.available_monitors().map_err(|error| error.to_string())?;
+    let monitors = window
+        .available_monitors()
+        .map_err(|error| error.to_string())?;
   let mut best_match: Option<(Monitor, f64)> = None;
 
   for monitor in monitors {
@@ -1417,8 +1732,12 @@ fn menu_bar_popup_geometry_for_monitor(
   } else {
     monitor_position.y + monitor_size.height as i32 - anchor.y.round() as i32 - offset_y
   };
-  let available_height = (available_height_physical.max(0) as f64 / scale_factor).max(MENU_BAR_POPUP_MIN_HEIGHT);
-  let height = requested_height.clamp(MENU_BAR_POPUP_MIN_HEIGHT, MENU_BAR_POPUP_MAX_HEIGHT.min(available_height));
+    let available_height =
+        (available_height_physical.max(0) as f64 / scale_factor).max(MENU_BAR_POPUP_MIN_HEIGHT);
+    let height = requested_height.clamp(
+        MENU_BAR_POPUP_MIN_HEIGHT,
+        MENU_BAR_POPUP_MAX_HEIGHT.min(available_height),
+    );
   let popup_height = logical_to_physical_i32(height, scale_factor);
   let mut y = if opens_above {
     tray_top - offset_y - popup_height
@@ -1453,10 +1772,16 @@ fn tray_rect_anchor_physical(
 }
 
 fn logical_to_physical_i32(value: f64, scale_factor: f64) -> i32 {
-  (value * normalized_scale_factor(scale_factor)).round().max(1.0) as i32
+    (value * normalized_scale_factor(scale_factor))
+        .round()
+        .max(1.0) as i32
 }
 
-fn tray_rect_top_physical(rect: Rect, click_position: PhysicalPosition<f64>, scale_factor: f64) -> i32 {
+fn tray_rect_top_physical(
+    rect: Rect,
+    click_position: PhysicalPosition<f64>,
+    scale_factor: f64,
+) -> i32 {
   let rect_position = tray_rect_position_to_physical(rect.position, scale_factor);
   let rect_size = tray_rect_size_to_physical(rect.size, scale_factor);
   if rect_size.height > 0 {
@@ -1496,7 +1821,8 @@ fn build_daily_value_menu_bar(app: &AppHandle, db_path: &PathBuf) -> Result<Tray
   let separator = PredefinedMenuItem::separator(app).map_err(|error| error.to_string())?;
   let quit = MenuItem::with_id(app, DAILY_VALUE_QUIT_MENU_ID, "Quit", true, None::<&str>)
     .map_err(|error| error.to_string())?;
-  let menu = Menu::with_items(app, &[&show_window, &separator, &quit]).map_err(|error| error.to_string())?;
+    let menu = Menu::with_items(app, &[&show_window, &separator, &quit])
+        .map_err(|error| error.to_string())?;
 
   let mut builder = TrayIconBuilder::with_id(DAILY_VALUE_TRAY_ID)
     .menu(&menu)
@@ -1538,8 +1864,7 @@ fn build_daily_value_menu_bar(app: &AppHandle, db_path: &PathBuf) -> Result<Tray
   }
 
   let tray = builder.build(app).map_err(|error| error.to_string())?;
-  tray
-    .set_visible(menu_bar_has_visible_content(&settings))
+    tray.set_visible(menu_bar_has_visible_content(&settings))
     .map_err(|error| error.to_string())?;
   Ok(tray)
 }
@@ -1581,15 +1906,14 @@ fn spawn_scheduler(state: AppState) {
       }
 
       let should_scan = match settings.last_scan_completed_at.as_deref() {
-        Some(last_completed_at) => {
-          chrono::DateTime::parse_from_rfc3339(last_completed_at)
+                Some(last_completed_at) => chrono::DateTime::parse_from_rfc3339(last_completed_at)
             .ok()
             .map(|last| {
-              let elapsed = chrono::Utc::now().signed_duration_since(last.with_timezone(&chrono::Utc));
+                        let elapsed = chrono::Utc::now()
+                            .signed_duration_since(last.with_timezone(&chrono::Utc));
               elapsed.num_minutes() >= settings.auto_scan_interval_minutes.max(1)
             })
-            .unwrap_or(true)
-        }
+                    .unwrap_or(true),
         None => true,
       };
 
@@ -1654,8 +1978,12 @@ pub fn run() {
         .path()
         .app_data_dir()
         .map_err(|error| format!("Failed to resolve app data dir: {error}"))?;
-      fs::create_dir_all(&app_data_dir)
-        .map_err(|error| format!("Failed to create app data dir {}: {error}", app_data_dir.display()))?;
+            fs::create_dir_all(&app_data_dir).map_err(|error| {
+                format!(
+                    "Failed to create app data dir {}: {error}",
+                    app_data_dir.display()
+                )
+            })?;
       let db_path = app_data_dir.join("codex-counter.sqlite");
 
       let conn = open_connection(&db_path).map_err(|error| error.to_string())?;
@@ -1673,6 +2001,7 @@ pub fn run() {
       };
       let state = AppState {
         db_path,
+                app_data_dir,
         scan_in_progress: Arc::new(AtomicBool::new(false)),
         daily_value_tray,
         live_rate_limits: Arc::new(Mutex::new(None)),
@@ -1680,7 +2009,11 @@ pub fn run() {
       };
       app.manage(state.clone());
       if let Ok(settings) = get_sync_settings(&conn) {
-        apply_dock_icon_visibility(&app_handle, &settings, state.daily_value_tray.is_some());
+                apply_dock_icon_visibility(
+                    &app_handle,
+                    &settings,
+                    state.daily_value_tray.is_some(),
+                );
       }
       if let Err(error) = build_menu_bar_popup_window(&app_handle) {
         log::warn!("Failed to set up menu bar popup window: {error}");
@@ -1693,6 +2026,7 @@ pub fn run() {
     })
     .invoke_handler(tauri::generate_handler![
       scanCodexUsage,
+            scanCodexSources,
       getScanInProgress,
       refreshPricing,
       getOverview,
@@ -1701,6 +2035,12 @@ pub fn run() {
       getMenuBarPopupSnapshot,
       resizeMenuBarPopup,
       loadDashboard,
+            discoverSshCodexSources,
+            listCodexSources,
+            upsertCodexSource,
+            setCodexSourceSelected,
+            deleteCodexSource,
+            downloadCodexSource,
       getConversationDetail,
       handleMenuBarPopupAction,
       getSyncSettings,
@@ -1827,7 +2167,10 @@ mod tests {
   #[test]
   fn menu_bar_title_joins_visible_segments_without_extra_spacing() {
     assert_eq!(menu_bar_title(None, None), None);
-    assert_eq!(menu_bar_title(Some("$12.4"), None), Some("$12.4".to_string()));
+        assert_eq!(
+            menu_bar_title(Some("$12.4"), None),
+            Some("$12.4".to_string())
+        );
     assert_eq!(menu_bar_title(None, Some("67%")), Some("67%".to_string()));
     assert_eq!(
       menu_bar_title(Some("$12.4"), Some("67%")),
@@ -1893,7 +2236,8 @@ mod tests {
 
   #[test]
   fn tray_popup_position_keeps_physical_tray_coordinates_unscaled() {
-    let position = tray_rect_position_to_physical(Position::Physical((1440.0, 12.0).into()), 2.0);
+        let position =
+            tray_rect_position_to_physical(Position::Physical((1440.0, 12.0).into()), 2.0);
     let size = tray_rect_size_to_physical(tauri::Size::Physical((24u32, 24u32).into()), 2.0);
 
     assert_eq!(position, PhysicalPosition::new(1440, 12));
@@ -1918,7 +2262,8 @@ mod tests {
       size: tauri::Size::Physical((48u32, 48u32).into()),
     };
 
-    let lookup_point = tray_event_monitor_lookup_point(rect, PhysicalPosition::new(4024.0, 24.0), 2.0);
+        let lookup_point =
+            tray_event_monitor_lookup_point(rect, PhysicalPosition::new(4024.0, 24.0), 2.0);
 
     assert_eq!(lookup_point, PhysicalPosition::new(2012.0, 29.0));
   }

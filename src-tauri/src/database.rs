@@ -5,10 +5,15 @@ use chrono::Utc;
 use rusqlite::{params, Connection};
 
 mod rate_limit_samples;
+mod sources;
 mod subscriptions;
 mod sync_settings;
 
 pub use rate_limit_samples::{insert_live_rate_limit_snapshot, replace_session_rate_limit_samples};
+pub use sources::{
+    delete_codex_source, ensure_local_codex_source, get_codex_source, list_codex_sources,
+    set_codex_source_selected, update_codex_source_download_state, upsert_ssh_codex_source,
+};
 pub use subscriptions::{
     canonical_subscription_currency, create_subscription_record, delete_subscription_record,
     get_subscription_profile, list_subscription_records, save_subscription_profile,
@@ -45,9 +50,49 @@ pub fn open_connection(db_path: &Path) -> rusqlite::Result<Connection> {
 
 pub fn init_db(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(include_str!("../sql/schema.sql"))?;
+    ensure_source_schema(conn)?;
     sync_settings::ensure_sync_settings_schema(conn)?;
     ensure_singletons(conn)?;
+    ensure_local_codex_source(conn, None)?;
     conn.execute_batch(include_str!("../sql/indexes.sql"))?;
+    Ok(())
+}
+
+fn ensure_source_schema(conn: &Connection) -> rusqlite::Result<()> {
+    ensure_column(
+        conn,
+        "sessions",
+        "source_id",
+        "ALTER TABLE sessions ADD COLUMN source_id TEXT NOT NULL DEFAULT 'local'",
+    )?;
+    ensure_column(
+        conn,
+        "import_state",
+        "source_id",
+        "ALTER TABLE import_state ADD COLUMN source_id TEXT NOT NULL DEFAULT 'local'",
+    )?;
+    ensure_column(
+        conn,
+        "rate_limit_samples",
+        "source_id",
+        "ALTER TABLE rate_limit_samples ADD COLUMN source_id TEXT NOT NULL DEFAULT 'local'",
+    )?;
+    Ok(())
+}
+
+fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    alter_sql: &str,
+) -> rusqlite::Result<()> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if !columns.iter().any(|name| name == column) {
+        conn.execute(alter_sql, [])?;
+    }
     Ok(())
 }
 
