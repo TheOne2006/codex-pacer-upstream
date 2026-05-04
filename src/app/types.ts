@@ -55,6 +55,27 @@ export interface SubscriptionProfile {
   updatedAt: string
 }
 
+export interface SubscriptionRecord {
+  id: number
+  paidAt: string
+  serviceStart: string
+  serviceEnd: string
+  amountUsd: number
+  planType: string
+  note: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface SubscriptionRecordInput {
+  paidAt: string
+  serviceStart: string
+  serviceEnd: string
+  amountUsd: number
+  planType: string
+  note: string | null
+}
+
 export interface ScanResult {
   codexHome: string
   scannedFiles: number
@@ -191,6 +212,7 @@ export interface DashboardSnapshot {
   conversations: ConversationListItem[]
   syncSettings: SyncSettings
   subscriptionProfile: SubscriptionProfile
+  subscriptionRecords: SubscriptionRecord[]
   liveRateLimits: LiveRateLimitSnapshot | null
 }
 

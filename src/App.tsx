@@ -13,12 +13,16 @@ import {
 } from 'lucide-react'
 
 import {
+  createSubscriptionRecord,
+  deleteSubscriptionRecord,
   getScanInProgress,
   getConversationDetail,
   getLiveRateLimits,
+  listSubscriptionRecords,
   loadDashboard,
   refreshPricing,
   scanCodexUsage,
+  updateSubscriptionRecord,
   updateSubscriptionProfile,
   updateSyncSettings,
 } from './app/api'
@@ -49,6 +53,8 @@ import type {
   ShareMode,
   ShareSlice,
   SubscriptionProfile,
+  SubscriptionRecord,
+  SubscriptionRecordInput,
   SyncSettings,
 } from './app/types'
 import { ModelShareChart } from './components/ModelShareChart'
@@ -89,6 +95,7 @@ function App() {
   const [detail, setDetail] = useState<ConversationDetail | null>(null)
   const [syncSettings, setSyncSettings] = useState<SyncSettings | null>(null)
   const [subscriptionProfile, setSubscriptionProfile] = useState<SubscriptionProfile | null>(null)
+  const [subscriptionRecords, setSubscriptionRecords] = useState<SubscriptionRecord[]>([])
   const [liveRateLimits, setLiveRateLimits] = useState<LiveRateLimitSnapshot | null>(null)
   const [loadedQueryKey, setLoadedQueryKey] = useState<string | null>(null)
   const [dashboardRevision, setDashboardRevision] = useState(0)
@@ -180,6 +187,7 @@ function App() {
         setConversations(snapshot.conversations)
         setSyncSettings(snapshot.syncSettings)
         setSubscriptionProfile(snapshot.subscriptionProfile)
+        setSubscriptionRecords(snapshot.subscriptionRecords)
         setLiveRateLimits(snapshot.liveRateLimits)
         detailCacheRef.current = nextDetailCache
         setDashboardRevision((current) => current + 1)
@@ -394,6 +402,26 @@ function App() {
       await emitTo(MENU_BAR_POPUP_WINDOW_LABEL, MENU_BAR_POPUP_REFRESH_EVENT, {}).catch(() => {})
     }
     setStatusMessage(t.status.settingsSaved)
+  }
+
+  async function handleSaveSubscriptionRecord(payload: SubscriptionRecordInput, id?: number | null) {
+    if (id) {
+      await updateSubscriptionRecord(id, payload)
+    } else {
+      await createSubscriptionRecord(payload)
+    }
+    const nextRecords = await listSubscriptionRecords()
+    setSubscriptionRecords(nextRecords)
+    await loadShell(false)
+    setStatusMessage(t.status.subscriptionRecordSaved)
+  }
+
+  async function handleDeleteSubscriptionRecord(id: number) {
+    await deleteSubscriptionRecord(id)
+    const nextRecords = await listSubscriptionRecords()
+    setSubscriptionRecords(nextRecords)
+    await loadShell(false)
+    setStatusMessage(t.status.subscriptionRecordDeleted)
   }
 
   const snapshotIsCurrent = loadedQueryKey === currentQueryKey
@@ -670,12 +698,9 @@ function App() {
                       tone="secondary"
                       value={formatUsd(activeOverview?.stats.subscriptionCostUsd ?? 0, language)}
                       note={
-                        subscriptionProfile
-                          ? t.metrics.planPerMonth(
-                              subscriptionProfile.planType,
-                              formatUsd(subscriptionProfile.monthlyPrice, language),
-                            )
-                          : undefined
+                        subscriptionRecords.length > 0
+                          ? t.metrics.subscriptionLedgerNote(subscriptionRecords.length)
+                          : t.metrics.noSubscriptionRecords
                       }
                     />
                     <MetricCard
@@ -900,9 +925,12 @@ function App() {
         language={language}
         liveRateLimits={liveRateLimits}
         onClose={() => setSettingsOpen(false)}
+        onDeleteSubscriptionRecord={handleDeleteSubscriptionRecord}
         onLanguageChange={setLanguage}
         onSave={handleSaveSettings}
+        onSaveSubscriptionRecord={handleSaveSubscriptionRecord}
         subscriptionProfile={subscriptionProfile}
+        subscriptionRecords={subscriptionRecords}
         syncSettings={syncSettings}
       />
     </div>

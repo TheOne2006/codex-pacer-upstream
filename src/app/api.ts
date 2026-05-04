@@ -9,6 +9,8 @@ import type {
   OverviewResponse,
   QuotaTrendPoint,
   SubscriptionProfile,
+  SubscriptionRecord,
+  SubscriptionRecordInput,
   SyncSettings,
 } from './types'
 
@@ -57,6 +59,10 @@ function createMockSubscriptionProfile(): SubscriptionProfile {
     billingAnchorDay: 1,
     updatedAt: nowIso(),
   }
+}
+
+function createMockSubscriptionRecords(): SubscriptionRecord[] {
+  return []
 }
 
 function createMockLiveRateLimits(): LiveRateLimitSnapshot {
@@ -260,6 +266,7 @@ export async function loadDashboard(
       conversations: [] as ConversationListItem[],
       syncSettings: createMockSyncSettings(),
       subscriptionProfile: createMockSubscriptionProfile(),
+      subscriptionRecords: createMockSubscriptionRecords(),
       liveRateLimits: createMockLiveRateLimits(),
     }),
   )
@@ -312,4 +319,30 @@ export async function updateSubscriptionProfile(payload: SubscriptionProfile) {
     ...payload,
     currency: 'USD',
   }))
+}
+
+export async function listSubscriptionRecords() {
+  return invokeOrMock('listSubscriptionRecords', {}, createMockSubscriptionRecords)
+}
+
+export async function createSubscriptionRecord(payload: SubscriptionRecordInput) {
+  return invokeOrMock('createSubscriptionRecord', { payload }, () => ({
+    id: Date.now(),
+    ...payload,
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  }))
+}
+
+export async function updateSubscriptionRecord(id: number, payload: SubscriptionRecordInput) {
+  return invokeOrMock('updateSubscriptionRecord', { id, payload }, () => ({
+    id,
+    ...payload,
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  }))
+}
+
+export async function deleteSubscriptionRecord(id: number) {
+  return invokeOrMock('deleteSubscriptionRecord', { id }, () => true)
 }

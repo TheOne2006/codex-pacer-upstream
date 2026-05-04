@@ -10,7 +10,9 @@ mod sync_settings;
 
 pub use rate_limit_samples::{insert_live_rate_limit_snapshot, replace_session_rate_limit_samples};
 pub use subscriptions::{
-    canonical_subscription_currency, get_subscription_profile, save_subscription_profile,
+    canonical_subscription_currency, create_subscription_record, delete_subscription_record,
+    get_subscription_profile, list_subscription_records, save_subscription_profile,
+    update_subscription_record,
 };
 pub use sync_settings::{
     get_sync_settings, save_sync_settings, set_last_scan_completed, set_last_scan_started,
