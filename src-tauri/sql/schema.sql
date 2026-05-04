@@ -63,6 +63,18 @@ CREATE TABLE IF NOT EXISTS subscription_profile (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS subscription_records (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  paid_at TEXT NOT NULL,
+  service_start TEXT NOT NULL,
+  service_end TEXT NOT NULL,
+  amount_usd REAL NOT NULL,
+  plan_type TEXT NOT NULL,
+  note TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS session_overrides (
   session_id TEXT PRIMARY KEY,
   fast_mode_override INTEGER,

@@ -154,6 +154,31 @@ impl Default for SubscriptionProfile {
   }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionRecord {
+  pub id: i64,
+  pub paid_at: String,
+  pub service_start: String,
+  pub service_end: String,
+  pub amount_usd: f64,
+  pub plan_type: String,
+  pub note: Option<String>,
+  pub created_at: String,
+  pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionRecordInput {
+  pub paid_at: String,
+  pub service_start: String,
+  pub service_end: String,
+  pub amount_usd: f64,
+  pub plan_type: String,
+  pub note: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationFilters {
@@ -323,6 +348,7 @@ pub struct DashboardSnapshot {
   pub conversations: Vec<ConversationListItem>,
   pub sync_settings: SyncSettings,
   pub subscription_profile: SubscriptionProfile,
+  pub subscription_records: Vec<SubscriptionRecord>,
   pub live_rate_limits: Option<LiveRateLimitSnapshot>,
 }
 

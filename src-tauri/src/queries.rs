@@ -10,12 +10,12 @@ use chrono::{
 use rusqlite::Connection;
 use serde_json::Value;
 
-use crate::database::{get_subscription_profile, open_connection};
+use crate::database::{get_subscription_profile, list_subscription_records, open_connection};
 use crate::models::{
   CompositionShare, ConversationDetail, ConversationFilters, ConversationListItem,
   ConversationSessionSummary, ConversationTurnPoint, LiveRateLimitSnapshot, ModelShare,
-  OverviewResponse, OverviewStats, PricingCatalogEntry, QuotaTrendPoint, SubscriptionProfile, TokenUsage,
-  TrendPoint,
+  OverviewResponse, OverviewStats, PricingCatalogEntry, QuotaTrendPoint, SubscriptionProfile,
+  SubscriptionRecord, TokenUsage, TrendPoint,
 };
 use crate::pricing::{
   calculate_value_usd, display_name_for_model, load_catalog_map, model_color, normalize_model_id,
@@ -97,6 +97,7 @@ pub struct DashboardData {
   pub overview: OverviewResponse,
   pub conversations: Vec<ConversationListItem>,
   pub subscription_profile: SubscriptionProfile,
+  pub subscription_records: Vec<SubscriptionRecord>,
 }
 
 pub fn get_overview(
@@ -112,12 +113,14 @@ pub fn get_overview(
   let sessions = load_sessions(&conn).map_err(|error| error.to_string())?;
   let events = load_events(&conn).map_err(|error| error.to_string())?;
   let profile = get_subscription_profile(&conn).map_err(|error| error.to_string())?;
+  let subscription_records = list_subscription_records(&conn).map_err(|error| error.to_string())?;
   let catalog = load_catalog_map(&conn).map_err(|error| error.to_string())?;
   build_overview(
     &conn,
     &sessions,
     &events,
     &profile,
+    &subscription_records,
     &catalog,
     bucket,
     anchor,
@@ -171,7 +174,16 @@ pub fn list_conversations(
   let sessions = load_sessions(&conn).map_err(|error| error.to_string())?;
   let events = load_events(&conn).map_err(|error| error.to_string())?;
   let profile = get_subscription_profile(&conn).map_err(|error| error.to_string())?;
-  build_conversation_list(&conn, &sessions, &events, &profile, filters, live_rate_limits.as_ref())
+  let subscription_records = list_subscription_records(&conn).map_err(|error| error.to_string())?;
+  build_conversation_list(
+    &conn,
+    &sessions,
+    &events,
+    &profile,
+    &subscription_records,
+    filters,
+    live_rate_limits.as_ref(),
+  )
 }
 
 pub fn load_dashboard_data(
@@ -188,6 +200,7 @@ pub fn load_dashboard_data(
   let sessions = load_sessions(&conn).map_err(|error| error.to_string())?;
   let events = load_events(&conn).map_err(|error| error.to_string())?;
   let profile = get_subscription_profile(&conn).map_err(|error| error.to_string())?;
+  let subscription_records = list_subscription_records(&conn).map_err(|error| error.to_string())?;
   let catalog = load_catalog_map(&conn).map_err(|error| error.to_string())?;
 
   let overview = build_overview(
@@ -195,6 +208,7 @@ pub fn load_dashboard_data(
     &sessions,
     &events,
     &profile,
+    &subscription_records,
     &catalog,
     bucket.clone(),
     anchor.clone(),
@@ -208,6 +222,7 @@ pub fn load_dashboard_data(
     &sessions,
     &events,
     &profile,
+    &subscription_records,
     Some(ConversationFilters {
       bucket,
       anchor,
@@ -223,6 +238,7 @@ pub fn load_dashboard_data(
     overview,
     conversations,
     subscription_profile: profile,
+    subscription_records,
   })
 }
 
@@ -231,6 +247,7 @@ fn build_overview(
   sessions: &HashMap<String, SessionRow>,
   events: &[EventRow],
   profile: &SubscriptionProfile,
+  subscription_records: &[SubscriptionRecord],
   catalog: &HashMap<String, PricingCatalogEntry>,
   bucket: Option<String>,
   anchor: Option<String>,
@@ -274,8 +291,7 @@ fn build_overview(
     }
   }
 
-  let subscription_cost_usd =
-    subscription_cost_for_window(window, profile.monthly_price, profile.billing_anchor_day as u32);
+  let subscription_cost_usd = subscription_cost_for_overview(window, subscription_records);
   let payoff_ratio = if subscription_cost_usd > 0.0 {
     total_value_usd / subscription_cost_usd
   } else {
@@ -325,6 +341,7 @@ fn build_conversation_list(
   sessions: &HashMap<String, SessionRow>,
   events: &[EventRow],
   profile: &SubscriptionProfile,
+  subscription_records: &[SubscriptionRecord],
   filters: Option<ConversationFilters>,
   live_rate_limits: Option<&LiveRateLimitSnapshot>,
 ) -> Result<Vec<ConversationListItem>, String> {
@@ -341,6 +358,7 @@ fn build_conversation_list(
     filters.live_window_offset,
   )?
   .window;
+  let subscription_cost_usd = subscription_cost_for_window(&window, subscription_records);
   let search = filters.search.unwrap_or_default().to_ascii_lowercase();
 
   let mut groups: BTreeMap<String, ConversationAccumulator> = BTreeMap::new();
@@ -431,8 +449,8 @@ fn build_conversation_list(
       subagent_count: group.session_ids.len().saturating_sub(1),
       has_fast_mode: !group.fast_session_ids.is_empty(),
       api_value_usd: group.api_value_usd,
-      subscription_share: if profile.monthly_price > 0.0 {
-        group.api_value_usd / profile.monthly_price
+      subscription_share: if subscription_cost_usd > 0.0 {
+        group.api_value_usd / subscription_cost_usd
       } else {
         0.0
       },
@@ -454,7 +472,7 @@ pub fn get_conversation_detail(db_path: &Path, root_session_id: &str) -> Result<
   let conn = open_connection(db_path).map_err(|error| error.to_string())?;
   let sessions = load_sessions_for_root_session(&conn, root_session_id).map_err(|error| error.to_string())?;
   let events = load_events_for_root_session(&conn, root_session_id).map_err(|error| error.to_string())?;
-  let profile = get_subscription_profile(&conn).map_err(|error| error.to_string())?;
+  let subscription_records = list_subscription_records(&conn).map_err(|error| error.to_string())?;
   let catalog = load_catalog_map(&conn).map_err(|error| error.to_string())?;
 
   let mut conversation_sessions = sessions.values().cloned().collect::<Vec<_>>();
@@ -598,6 +616,11 @@ pub fn get_conversation_detail(db_path: &Path, root_session_id: &str) -> Result<
   if title.trim().is_empty() {
     title = root_session_id.to_string();
   }
+  let subscription_cost_usd = subscription_records
+    .iter()
+    .filter(|record| record.amount_usd > 0.0 && record.amount_usd.is_finite())
+    .map(|record| record.amount_usd)
+    .sum::<f64>();
 
   Ok(ConversationDetail {
     root_session_id: root_session_id.to_string(),
@@ -610,8 +633,8 @@ pub fn get_conversation_detail(db_path: &Path, root_session_id: &str) -> Result<
     reasoning_output_tokens: total_reasoning,
     total_tokens,
     api_value_usd: total_value_usd,
-    subscription_share: if profile.monthly_price > 0.0 {
-      total_value_usd / profile.monthly_price
+    subscription_share: if subscription_cost_usd > 0.0 {
+      total_value_usd / subscription_cost_usd
     } else {
       0.0
     },
@@ -1541,28 +1564,55 @@ fn custom_window_uses_monthly_bins(window: &Window) -> bool {
   window.end.signed_duration_since(window.start) > chrono::Duration::days(62)
 }
 
-fn subscription_cost_for_window(window: &Window, monthly_price: f64, billing_anchor_day: u32) -> f64 {
-  if window.bucket == "subscription_month" {
-    return monthly_price;
+fn subscription_cost_for_window(window: &Window, records: &[SubscriptionRecord]) -> f64 {
+  records
+    .iter()
+    .filter_map(|record| subscription_record_cost_for_window(record, window))
+    .sum()
+}
+
+fn subscription_cost_for_overview(window: &Window, records: &[SubscriptionRecord]) -> f64 {
+  if window.bucket == "total" {
+    return records
+      .iter()
+      .filter(|record| record.amount_usd > 0.0 && record.amount_usd.is_finite())
+      .map(|record| record.amount_usd)
+      .sum();
   }
 
-  let mut total = 0.0;
-  let mut cycle_start = billing_cycle_start(window.start.date_naive(), billing_anchor_day);
-  loop {
-    let cycle_end = billing_cycle_next_start(cycle_start, billing_anchor_day);
-    let overlap_start = window.start.date_naive().max(cycle_start);
-    let overlap_end = window.end.date_naive().min(cycle_end);
-    if overlap_start < overlap_end {
-      let cycle_days = (cycle_end - cycle_start).num_days().max(1) as f64;
-      let overlap_days = (overlap_end - overlap_start).num_days().max(0) as f64;
-      total += monthly_price * (overlap_days / cycle_days);
-    }
-    if cycle_end >= window.end.date_naive() {
-      break;
-    }
-    cycle_start = cycle_end;
+  subscription_cost_for_window(window, records)
+}
+
+fn subscription_record_cost_for_window(
+  record: &SubscriptionRecord,
+  window: &Window,
+) -> Option<f64> {
+  if record.amount_usd <= 0.0 || !record.amount_usd.is_finite() {
+    return None;
   }
-  total
+  let service_start = parse_date(&record.service_start)
+    .ok()
+    .and_then(|date| local_midnight(date).ok())?;
+  let service_end = parse_date(&record.service_end)
+    .ok()
+    .and_then(|date| local_midnight(date).ok())?;
+  if service_end <= service_start {
+    return None;
+  }
+  let overlap_start = window.start.max(service_start);
+  let overlap_end = window.end.min(service_end);
+  if overlap_end <= overlap_start {
+    return None;
+  }
+  let service_seconds = service_end
+    .signed_duration_since(service_start)
+    .num_seconds()
+    .max(1) as f64;
+  let overlap_seconds = overlap_end
+    .signed_duration_since(overlap_start)
+    .num_seconds()
+    .max(0) as f64;
+  Some(record.amount_usd * (overlap_seconds / service_seconds))
 }
 
 fn selected_rate_limit_window<'a>(
@@ -1837,6 +1887,12 @@ mod tests {
   use super::*;
   use crate::database::{init_db, insert_live_rate_limit_snapshot};
   use tempfile::tempdir;
+
+  fn local_time(value: &str) -> DateTime<Local> {
+    DateTime::parse_from_rfc3339(value)
+      .expect("parse local test timestamp")
+      .with_timezone(&Local)
+  }
 
   #[test]
   fn groups_modern_snapshots_into_one_turn() {
@@ -2190,6 +2246,96 @@ mod tests {
     .expect_err("custom end before start should fail");
 
     assert!(error.contains("Custom range end date cannot be before start date"));
+  }
+
+  #[test]
+  fn subscription_cost_uses_service_period_proration() {
+    let window = Window {
+      bucket: "month".to_string(),
+      anchor: "2026-04-01".to_string(),
+      start: local_time("2026-04-01T00:00:00+08:00"),
+      end: local_time("2026-05-01T00:00:00+08:00"),
+    };
+    let records = vec![
+      SubscriptionRecord {
+        id: 1,
+        paid_at: "2026-04-16".to_string(),
+        service_start: "2026-04-16".to_string(),
+        service_end: "2026-05-16".to_string(),
+        amount_usd: 20.0,
+        plan_type: "plus".to_string(),
+        note: None,
+        created_at: String::new(),
+        updated_at: String::new(),
+      },
+      SubscriptionRecord {
+        id: 2,
+        paid_at: "2026-04-01".to_string(),
+        service_start: "2026-04-01".to_string(),
+        service_end: "2026-05-01".to_string(),
+        amount_usd: 200.0,
+        plan_type: "pro".to_string(),
+        note: None,
+        created_at: String::new(),
+        updated_at: String::new(),
+      },
+    ];
+
+    let cost = subscription_cost_for_window(&window, &records);
+
+    assert!((cost - 210.0).abs() < 0.001);
+  }
+
+  #[test]
+  fn total_overview_subscription_cost_sums_full_records() {
+    let window = Window {
+      bucket: "total".to_string(),
+      anchor: "2026-03-19".to_string(),
+      start: local_time("2026-03-19T00:00:00+08:00"),
+      end: local_time("2026-05-01T00:00:00+08:00"),
+    };
+    let records = vec![
+      SubscriptionRecord {
+        id: 1,
+        paid_at: "2026-03-19".to_string(),
+        service_start: "2026-03-19".to_string(),
+        service_end: "2026-04-19".to_string(),
+        amount_usd: 19.99,
+        plan_type: "plus".to_string(),
+        note: None,
+        created_at: String::new(),
+        updated_at: String::new(),
+      },
+      SubscriptionRecord {
+        id: 2,
+        paid_at: "2026-04-25".to_string(),
+        service_start: "2026-04-25".to_string(),
+        service_end: "2026-05-25".to_string(),
+        amount_usd: 100.0,
+        plan_type: "pro_x5".to_string(),
+        note: None,
+        created_at: String::new(),
+        updated_at: String::new(),
+      },
+    ];
+
+    let prorated_cost = subscription_cost_for_window(&window, &records);
+    let total_cost = subscription_cost_for_overview(&window, &records);
+
+    assert!(prorated_cost < 119.99);
+    assert!((total_cost - 119.99).abs() < 0.001);
+  }
+
+  #[test]
+  fn subscription_cost_is_zero_without_records() {
+    let window = Window {
+      bucket: "day".to_string(),
+      anchor: "2026-04-16".to_string(),
+      start: local_time("2026-04-16T00:00:00+08:00"),
+      end: local_time("2026-04-17T00:00:00+08:00"),
+    };
+
+    assert_eq!(subscription_cost_for_window(&window, &[]), 0.0);
   }
 
   #[test]
