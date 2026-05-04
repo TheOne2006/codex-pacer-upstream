@@ -6,6 +6,7 @@ export type OverviewBucket =
   | 'subscription_month'
   | 'month'
   | 'year'
+  | 'custom'
   | 'total'
 
 export type ShareMode = 'value' | 'tokens'
@@ -197,6 +198,8 @@ export interface DashboardSnapshot {
 export interface ConversationFilters {
   bucket?: OverviewBucket | null
   anchor?: string | null
+  customStart?: string | null
+  customEnd?: string | null
   search?: string | null
   liveWindowOffset?: number | null
 }

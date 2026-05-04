@@ -97,6 +97,8 @@ pub fn get_overview(
   db_path: &Path,
   bucket: Option<String>,
   anchor: Option<String>,
+  custom_start: Option<String>,
+  custom_end: Option<String>,
   live_rate_limits: Option<LiveRateLimitSnapshot>,
   live_window_offset: Option<i64>,
 ) -> Result<OverviewResponse, String> {
@@ -113,6 +115,8 @@ pub fn get_overview(
     &catalog,
     bucket,
     anchor,
+    custom_start,
+    custom_end,
     live_rate_limits,
     live_window_offset,
   )
@@ -129,6 +133,8 @@ pub fn get_quota_trend(
   let resolved_window = resolve_window(
     &conn,
     Some(bucket),
+    None,
+    None,
     None,
     &events,
     profile.billing_anchor_day,
@@ -166,6 +172,8 @@ pub fn load_dashboard_data(
   db_path: &Path,
   bucket: Option<String>,
   anchor: Option<String>,
+  custom_start: Option<String>,
+  custom_end: Option<String>,
   search: Option<String>,
   live_rate_limits: Option<LiveRateLimitSnapshot>,
   live_window_offset: Option<i64>,
@@ -184,6 +192,8 @@ pub fn load_dashboard_data(
     &catalog,
     bucket.clone(),
     anchor.clone(),
+    custom_start.clone(),
+    custom_end.clone(),
     live_rate_limits.clone(),
     live_window_offset,
   )?;
@@ -195,6 +205,8 @@ pub fn load_dashboard_data(
     Some(ConversationFilters {
       bucket,
       anchor,
+      custom_start,
+      custom_end,
       search,
       live_window_offset,
     }),
@@ -216,6 +228,8 @@ fn build_overview(
   catalog: &HashMap<String, PricingCatalogEntry>,
   bucket: Option<String>,
   anchor: Option<String>,
+  custom_start: Option<String>,
+  custom_end: Option<String>,
   live_rate_limits: Option<LiveRateLimitSnapshot>,
   live_window_offset: Option<i64>,
 ) -> Result<OverviewResponse, String> {
@@ -223,6 +237,8 @@ fn build_overview(
     conn,
     bucket,
     anchor,
+    custom_start,
+    custom_end,
     events,
     profile.billing_anchor_day,
     live_rate_limits.as_ref(),
@@ -311,6 +327,8 @@ fn build_conversation_list(
     conn,
     filters.bucket.clone(),
     filters.anchor.clone(),
+    filters.custom_start.clone(),
+    filters.custom_end.clone(),
     events,
     profile.billing_anchor_day,
     live_rate_limits,
@@ -1204,6 +1222,8 @@ fn resolve_window(
   conn: &Connection,
   bucket: Option<String>,
   anchor: Option<String>,
+  custom_start: Option<String>,
+  custom_end: Option<String>,
   events: &[EventRow],
   billing_anchor_day: i64,
   live_rate_limits: Option<&LiveRateLimitSnapshot>,
@@ -1229,6 +1249,27 @@ fn resolve_window(
     }
     "five_hour" => resolve_live_rate_limit_window(conn, &bucket, live_rate_limits, requested_live_window_offset)?,
     "seven_day" => resolve_live_rate_limit_window(conn, &bucket, live_rate_limits, requested_live_window_offset)?,
+    "custom" => {
+      let start_date = custom_start
+        .as_deref()
+        .map(parse_date)
+        .transpose()?
+        .unwrap_or(anchor_date);
+      let end_date = custom_end
+        .as_deref()
+        .map(parse_date)
+        .transpose()?
+        .unwrap_or(start_date);
+      if end_date < start_date {
+        return Err("Custom range end date cannot be before start date.".to_string());
+      }
+      let start = local_midnight(start_date)?;
+      let exclusive_end_date = end_date
+        .checked_add_days(Days::new(1))
+        .ok_or_else(|| "Custom range end date is too large.".to_string())?;
+      let end = local_midnight(exclusive_end_date)?;
+      (start, end, start_date, 0, 0)
+    }
     "subscription_month" => {
       let cycle_start_date = billing_cycle_start(anchor_date, billing_anchor_day as u32);
       let start = local_midnight(cycle_start_date)?;
@@ -1274,7 +1315,7 @@ fn resolve_window(
     }
     _ => {
       return Err(format!(
-        "Unsupported bucket {}. Expected day, week, five_hour, seven_day, subscription_month, month, year, or total.",
+        "Unsupported bucket {}. Expected day, week, five_hour, seven_day, custom, subscription_month, month, year, or total.",
         bucket
       ))
     }
@@ -1524,6 +1565,13 @@ fn build_bins(window: &Window) -> Vec<TrendBin> {
       "five_hour" => current + chrono::Duration::minutes(15),
       "week" | "subscription_month" | "month" => current + chrono::Duration::days(1),
       "seven_day" => current + chrono::Duration::hours(1),
+      "custom" if custom_window_uses_hourly_bins(window) => current + chrono::Duration::hours(1),
+      "custom" if custom_window_uses_monthly_bins(window) => {
+        let current_date = current.date_naive();
+        let next_date = add_months(current_date, 1);
+        local_midnight(next_date).unwrap_or(window.end)
+      }
+      "custom" => current + chrono::Duration::days(1),
       "year" | "total" => {
         let current_date = current.date_naive();
         let next_date = add_months(current_date, 1);
@@ -1535,6 +1583,8 @@ fn build_bins(window: &Window) -> Vec<TrendBin> {
     let label = match window.bucket.as_str() {
       "day" | "five_hour" => current.format("%H:%M").to_string(),
       "seven_day" => current.format("%b %d %H:%M").to_string(),
+      "custom" if custom_window_uses_hourly_bins(window) => current.format("%H:%M").to_string(),
+      "custom" if custom_window_uses_monthly_bins(window) => current.format("%b %Y").to_string(),
       "year" | "total" => current.format("%b %Y").to_string(),
       _ => current.format("%b %d").to_string(),
     };
@@ -1547,6 +1597,14 @@ fn build_bins(window: &Window) -> Vec<TrendBin> {
     current = next;
   }
   bins
+}
+
+fn custom_window_uses_hourly_bins(window: &Window) -> bool {
+  window.end.signed_duration_since(window.start) <= chrono::Duration::days(1)
+}
+
+fn custom_window_uses_monthly_bins(window: &Window) -> bool {
+  window.end.signed_duration_since(window.start) > chrono::Duration::days(62)
 }
 
 fn subscription_cost_for_window(window: &Window, monthly_price: f64, billing_anchor_day: u32) -> f64 {
@@ -2136,6 +2194,8 @@ mod tests {
       &conn,
       Some("subscription_month".to_string()),
       Some("2026-03-26".to_string()),
+      None,
+      None,
       &[],
       23,
       None,
@@ -2156,6 +2216,8 @@ mod tests {
       &conn,
       Some("subscription_month".to_string()),
       Some("2026-03-05".to_string()),
+      None,
+      None,
       &[],
       23,
       None,
@@ -2166,6 +2228,49 @@ mod tests {
     assert_eq!(window.window.anchor, "2026-02-23");
     assert_eq!(window.window.start.date_naive(), NaiveDate::from_ymd_opt(2026, 2, 23).unwrap());
     assert_eq!(window.window.end.date_naive(), NaiveDate::from_ymd_opt(2026, 3, 23).unwrap());
+  }
+
+  #[test]
+  fn custom_window_includes_selected_end_date() {
+    let conn = Connection::open_in_memory().expect("open in-memory database");
+    init_db(&conn).expect("init db");
+    let window = resolve_window(
+      &conn,
+      Some("custom".to_string()),
+      None,
+      Some("2026-04-10".to_string()),
+      Some("2026-04-12".to_string()),
+      &[],
+      1,
+      None,
+      None,
+    )
+    .expect("resolve custom window");
+
+    assert_eq!(window.window.bucket, "custom");
+    assert_eq!(window.window.anchor, "2026-04-10");
+    assert_eq!(window.window.start.date_naive(), NaiveDate::from_ymd_opt(2026, 4, 10).unwrap());
+    assert_eq!(window.window.end.date_naive(), NaiveDate::from_ymd_opt(2026, 4, 13).unwrap());
+  }
+
+  #[test]
+  fn custom_window_rejects_end_before_start() {
+    let conn = Connection::open_in_memory().expect("open in-memory database");
+    init_db(&conn).expect("init db");
+    let error = resolve_window(
+      &conn,
+      Some("custom".to_string()),
+      None,
+      Some("2026-04-12".to_string()),
+      Some("2026-04-10".to_string()),
+      &[],
+      1,
+      None,
+      None,
+    )
+    .expect_err("custom end before start should fail");
+
+    assert!(error.contains("Custom range end date cannot be before start date"));
   }
 
   #[test]
@@ -2189,7 +2294,7 @@ mod tests {
     insert_live_rate_limit_snapshot(&conn, &live_rate_limits).expect("insert live rate limit snapshot");
 
     let window =
-      resolve_window(&conn, Some("five_hour".to_string()), None, &[], 1, Some(&live_rate_limits), None)
+      resolve_window(&conn, Some("five_hour".to_string()), None, None, None, &[], 1, Some(&live_rate_limits), None)
         .expect("resolve live window");
 
     assert_eq!(window.window.anchor, "2026-03-26");
@@ -2234,7 +2339,7 @@ mod tests {
     insert_live_rate_limit_snapshot(&conn, &current).expect("insert current live window");
 
     let window =
-      resolve_window(&conn, Some("five_hour".to_string()), None, &[], 1, Some(&current), Some(1))
+      resolve_window(&conn, Some("five_hour".to_string()), None, None, None, &[], 1, Some(&current), Some(1))
         .expect("resolve historical live window");
 
     assert_eq!(window.live_window_offset, 1);

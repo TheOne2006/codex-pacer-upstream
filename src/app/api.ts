@@ -13,7 +13,7 @@ import type {
 } from './types'
 
 function bucketUsesAnchor(bucket: OverviewBucket) {
-  return !['five_hour', 'seven_day', 'total'].includes(bucket)
+  return !['five_hour', 'seven_day', 'custom', 'total'].includes(bucket)
 }
 
 function nowIso() {
@@ -71,13 +71,40 @@ function createMockLiveRateLimits(): LiveRateLimitSnapshot {
   }
 }
 
-function createMockOverview(bucket: OverviewBucket, anchor?: string | null): OverviewResponse {
+function localDateStartIso(value: string | null | undefined) {
+  const fallback = todayInputValue()
+  return new Date(`${value ?? fallback}T00:00:00`).toISOString()
+}
+
+function localDateExclusiveEndIso(value: string | null | undefined) {
+  const fallback = todayInputValue()
+  const date = new Date(`${value ?? fallback}T00:00:00`)
+  date.setDate(date.getDate() + 1)
+  return date.toISOString()
+}
+
+function todayInputValue() {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function createMockOverview(
+  bucket: OverviewBucket,
+  anchor?: string | null,
+  customStart?: string | null,
+  customEnd?: string | null,
+): OverviewResponse {
   const timestamp = nowIso()
+  const resolvedAnchor =
+    bucket === 'custom'
+      ? customStart ?? timestamp.slice(0, 10)
+      : bucketUsesAnchor(bucket)
+        ? anchor ?? timestamp.slice(0, 10)
+        : timestamp.slice(0, 10)
   return {
     bucket,
-    anchor: bucketUsesAnchor(bucket) ? anchor ?? timestamp.slice(0, 10) : timestamp.slice(0, 10),
-    windowStart: timestamp,
-    windowEnd: timestamp,
+    anchor: resolvedAnchor,
+    windowStart: bucket === 'custom' ? localDateStartIso(customStart) : timestamp,
+    windowEnd: bucket === 'custom' ? localDateExclusiveEndIso(customEnd ?? customStart) : timestamp,
     liveWindowOffset: 0,
     liveWindowCount: 0,
     stats: {
@@ -192,15 +219,22 @@ export async function refreshPricing() {
   return invokeOrMock('refreshPricing', {}, () => [])
 }
 
-export async function getOverview(bucket: OverviewBucket, anchor?: string | null): Promise<OverviewResponse> {
+export async function getOverview(
+  bucket: OverviewBucket,
+  anchor?: string | null,
+  customStart?: string | null,
+  customEnd?: string | null,
+): Promise<OverviewResponse> {
   return invokeOrMock(
     'getOverview',
     {
       bucket,
       anchor: bucketUsesAnchor(bucket) ? anchor ?? null : null,
+      customStart: bucket === 'custom' ? customStart ?? null : null,
+      customEnd: bucket === 'custom' ? customEnd ?? null : null,
       liveWindowOffset: null,
     },
-    () => createMockOverview(bucket, anchor),
+    () => createMockOverview(bucket, anchor, customStart, customEnd),
   )
 }
 
@@ -209,17 +243,21 @@ export async function loadDashboard(
   anchor?: string | null,
   search?: string | null,
   liveWindowOffset?: number | null,
+  customStart?: string | null,
+  customEnd?: string | null,
 ): Promise<import('./types').DashboardSnapshot> {
   return invokeOrMock(
     'loadDashboard',
     {
       bucket,
       anchor: bucketUsesAnchor(bucket) ? anchor ?? null : null,
+      customStart: bucket === 'custom' ? customStart ?? null : null,
+      customEnd: bucket === 'custom' ? customEnd ?? null : null,
       search: search ?? null,
       liveWindowOffset: liveWindowOffset ?? null,
     },
     () => ({
-      overview: createMockOverview(bucket, anchor),
+      overview: createMockOverview(bucket, anchor, customStart, customEnd),
       conversations: [] as ConversationListItem[],
       syncSettings: createMockSyncSettings(),
       subscriptionProfile: createMockSubscriptionProfile(),

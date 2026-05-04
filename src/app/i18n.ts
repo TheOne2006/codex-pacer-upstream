@@ -39,6 +39,7 @@ export type TranslationSet = {
     earlier: string
     newer: string
     start: string
+    end: string
     reset: string
     updated: string
     tokens: string
@@ -47,6 +48,8 @@ export type TranslationSet = {
     fast: string
     noData: string
     searchTitleOrSession: string
+    customRangeStartDate: string
+    customRangeEndDate: string
   }
   status: {
     waitingForFirstScan: string
@@ -277,6 +280,7 @@ const translations: Record<AppLanguage, TranslationSet> = {
       earlier: '更早',
       newer: '较新',
       start: '开始',
+      end: '结束',
       reset: '重置',
       updated: '更新于',
       tokens: 'Tokens',
@@ -285,6 +289,8 @@ const translations: Record<AppLanguage, TranslationSet> = {
       fast: 'Fast',
       noData: '暂无数据',
       searchTitleOrSession: '搜索标题或会话 ID',
+      customRangeStartDate: '自定义范围开始日期',
+      customRangeEndDate: '自定义范围结束日期',
     },
     status: {
       waitingForFirstScan: '等待首次扫描…',
@@ -304,6 +310,7 @@ const translations: Record<AppLanguage, TranslationSet> = {
       subscription_month: '订阅月',
       month: '月',
       year: '年',
+      custom: '自定义',
       total: '总计',
     },
     bucketDescriptions: {
@@ -518,6 +525,7 @@ const translations: Record<AppLanguage, TranslationSet> = {
       earlier: 'Earlier',
       newer: 'Newer',
       start: 'Start',
+      end: 'End',
       reset: 'Reset',
       updated: 'Updated',
       tokens: 'Tokens',
@@ -526,6 +534,8 @@ const translations: Record<AppLanguage, TranslationSet> = {
       fast: 'Fast',
       noData: 'No data',
       searchTitleOrSession: 'Search title or session id',
+      customRangeStartDate: 'Custom range start date',
+      customRangeEndDate: 'Custom range end date',
     },
     status: {
       waitingForFirstScan: 'Waiting for first scan…',
@@ -545,6 +555,7 @@ const translations: Record<AppLanguage, TranslationSet> = {
       subscription_month: 'Billing month',
       month: 'Month',
       year: 'Year',
+      custom: 'Custom',
       total: 'Total',
     },
     bucketDescriptions: {

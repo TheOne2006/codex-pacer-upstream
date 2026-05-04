@@ -524,6 +524,41 @@ select:focus-visible {
   margin-left: auto;
 }
 
+.custom-range-controls {
+  display: inline-flex;
+  align-items: end;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: nowrap;
+  margin-left: auto;
+  max-width: 100%;
+}
+
+.custom-range-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.custom-range-field span {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.custom-range-input {
+  width: 176px;
+  flex: 0 1 176px;
+}
+
+.range-separator {
+  color: var(--text-muted);
+  font-family: 'Fira Code', monospace;
+  font-size: 0.9rem;
+  line-height: 48px;
+}
+
 .metric-grid {
   display: grid;
   gap: 14px;
@@ -1927,6 +1962,22 @@ select:focus-visible {
     margin-left: 0;
     justify-content: flex-start;
     flex-wrap: wrap;
+  }
+
+  .custom-range-controls {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-start;
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .custom-range-input {
+    width: 100%;
+  }
+
+  .range-separator {
+    display: none;
   }
 
   .live-window-nav-copy {
