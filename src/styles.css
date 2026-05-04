@@ -131,11 +131,15 @@ select:focus-visible {
 }
 
 .chart-heading > div:first-child {
-  min-width: max-content;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .chart-heading h3 {
+  max-width: 100%;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .brand p,
@@ -1944,6 +1948,16 @@ select:focus-visible {
   .modal-header {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .chart-shell--secondary .chart-heading {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .chart-shell--secondary .chart-controls {
+    justify-content: flex-start;
+    width: 100%;
   }
 
   .timeline-value-group {

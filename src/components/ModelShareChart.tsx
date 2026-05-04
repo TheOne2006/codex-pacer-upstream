@@ -42,9 +42,11 @@ export function ModelShareChart({
         </div>
         <div className="chart-controls">
           {onDimensionChange ? (
-            <div className="chart-control-group" role="group" aria-label={t.charts.dimensionControlLabel}>
+            <div className="chart-control-group" role="radiogroup" aria-label={t.charts.dimensionControlLabel}>
               <div className="pill-strip">
                 <button
+                  role="radio"
+                  aria-checked={dimension === 'model'}
                   className={dimension === 'model' ? 'active' : ''}
                   onClick={() => onDimensionChange('model')}
                   type="button"
@@ -52,6 +54,8 @@ export function ModelShareChart({
                   {t.charts.byModel}
                 </button>
                 <button
+                  role="radio"
+                  aria-checked={dimension === 'composition'}
                   className={dimension === 'composition' ? 'active' : ''}
                   onClick={() => onDimensionChange('composition')}
                   type="button"
@@ -62,9 +66,11 @@ export function ModelShareChart({
             </div>
           ) : null}
           {onModeChange ? (
-            <div className="chart-control-group" role="group" aria-label={t.charts.metricControlLabel}>
+            <div className="chart-control-group" role="radiogroup" aria-label={t.charts.metricControlLabel}>
               <div className="pill-strip">
                 <button
+                  role="radio"
+                  aria-checked={mode === 'value'}
                   className={mode === 'value' ? 'active' : ''}
                   onClick={() => onModeChange('value')}
                   type="button"
@@ -72,6 +78,8 @@ export function ModelShareChart({
                   {t.charts.byValue}
                 </button>
                 <button
+                  role="radio"
+                  aria-checked={mode === 'tokens'}
                   className={mode === 'tokens' ? 'active' : ''}
                   onClick={() => onModeChange('tokens')}
                   type="button"

@@ -9,14 +9,26 @@ const cssSource = readFileSync(join(repoRoot, 'src/styles.css'), 'utf8')
 
 assert.match(
   chartSource,
-  /className="chart-control-group"[\s\S]*aria-label=\{t\.charts\.dimensionControlLabel\}/,
-  'distribution chart should expose the dimension controls as their own labelled group',
+  /className="chart-control-group"[\s\S]*role="radiogroup"[\s\S]*aria-label=\{t\.charts\.dimensionControlLabel\}/,
+  'distribution chart should expose the dimension controls as their own labelled radio group',
 )
 
 assert.match(
   chartSource,
-  /className="chart-control-group"[\s\S]*aria-label=\{t\.charts\.metricControlLabel\}/,
-  'distribution chart should expose the metric controls as their own labelled group',
+  /className="chart-control-group"[\s\S]*role="radiogroup"[\s\S]*aria-label=\{t\.charts\.metricControlLabel\}/,
+  'distribution chart should expose the metric controls as their own labelled radio group',
+)
+
+assert.match(
+  chartSource,
+  /role="radio"[\s\S]*aria-checked=\{dimension === 'model'\}/,
+  'dimension selector should expose selected state with aria-checked',
+)
+
+assert.match(
+  chartSource,
+  /role="radio"[\s\S]*aria-checked=\{mode === 'value'\}/,
+  'metric selector should expose selected state with aria-checked',
 )
 
 assert.match(
@@ -39,8 +51,20 @@ assert.match(
 
 assert.match(
   cssSource,
-  /\.chart-heading h3\s*\{[\s\S]*?white-space:\s*nowrap;[\s\S]*?\}/,
-  'chart titles should not wrap short labels like model share',
+  /\.chart-heading > div:first-child\s*\{[\s\S]*?min-width:\s*0;[\s\S]*?\}/,
+  'chart heading copy should be allowed to shrink before controls overflow',
+)
+
+assert.doesNotMatch(
+  cssSource,
+  /\.chart-heading > div:first-child\s*\{[\s\S]*?min-width:\s*max-content;[\s\S]*?\}/,
+  'chart heading copy should not force max-content width',
+)
+
+assert.match(
+  cssSource,
+  /@media \(max-width: 760px\)[\s\S]*?\.chart-shell--secondary \.chart-heading\s*\{[\s\S]*?flex-direction:\s*column;[\s\S]*?\}/,
+  'distribution chart heading should stack above controls on narrow screens',
 )
 
 assert.doesNotMatch(
@@ -53,4 +77,10 @@ assert.match(
   cssSource,
   /\.metric-card:not\(\.metric-card--featured\) strong\s*\{[\s\S]*?font-size:\s*clamp\(1\.18rem,\s*1\.8vw,\s*1\.72rem\);[\s\S]*?\}/,
   'standard metric cards should use a value size that fits short currency values without wrapping',
+)
+
+assert.match(
+  chartSource + readFileSync(join(repoRoot, 'src/App.tsx'), 'utf8'),
+  /<strong[^>]*aria-label=\{value\}[^>]*title=\{value\}/,
+  'metric values should expose the full value to assistive technology as well as hover',
 )
