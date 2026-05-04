@@ -9,26 +9,32 @@ const cssSource = readFileSync(join(repoRoot, 'src/styles.css'), 'utf8')
 
 assert.match(
   chartSource,
-  /className="chart-control-group"[\s\S]*role="radiogroup"[\s\S]*aria-label=\{t\.charts\.dimensionControlLabel\}/,
-  'distribution chart should expose the dimension controls as their own labelled radio group',
+  /className="chart-control-group"[\s\S]*role="group"[\s\S]*aria-label=\{t\.charts\.dimensionControlLabel\}/,
+  'distribution chart should expose the dimension controls as their own labelled button group',
 )
 
 assert.match(
   chartSource,
-  /className="chart-control-group"[\s\S]*role="radiogroup"[\s\S]*aria-label=\{t\.charts\.metricControlLabel\}/,
-  'distribution chart should expose the metric controls as their own labelled radio group',
+  /className="chart-control-group"[\s\S]*role="group"[\s\S]*aria-label=\{t\.charts\.metricControlLabel\}/,
+  'distribution chart should expose the metric controls as their own labelled button group',
 )
 
 assert.match(
   chartSource,
-  /role="radio"[\s\S]*aria-checked=\{dimension === 'model'\}/,
-  'dimension selector should expose selected state with aria-checked',
+  /aria-pressed=\{dimension === 'model'\}/,
+  'dimension selector should expose selected state with aria-pressed',
 )
 
 assert.match(
   chartSource,
-  /role="radio"[\s\S]*aria-checked=\{mode === 'value'\}/,
-  'metric selector should expose selected state with aria-checked',
+  /aria-pressed=\{mode === 'value'\}/,
+  'metric selector should expose selected state with aria-pressed',
+)
+
+assert.doesNotMatch(
+  chartSource,
+  /role="radiogroup"|role="radio"|aria-checked=/,
+  'distribution controls should not use custom radio semantics without radio keyboard behavior',
 )
 
 assert.match(
