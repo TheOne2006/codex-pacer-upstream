@@ -130,6 +130,18 @@ select:focus-visible {
   line-height: 1.02;
 }
 
+.chart-heading > div:first-child {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.chart-heading h3 {
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .brand p,
 .subtitle,
 .stat-caption,
@@ -404,9 +416,19 @@ select:focus-visible {
 
 .chart-controls {
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: 12px;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.chart-control-group {
+  display: inline-flex;
+  max-width: 100%;
+  padding: 4px;
+  border-radius: 999px;
+  border: 1px solid var(--line-subtle);
+  background: rgba(7, 13, 24, 0.48);
 }
 
 .header-actions,
@@ -431,6 +453,12 @@ select:focus-visible {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  max-width: 100%;
+}
+
+.chart-control-group .pill-strip {
+  flex-wrap: nowrap;
+  gap: 4px;
 }
 
 .pill-strip button {
@@ -439,6 +467,7 @@ select:focus-visible {
   border-radius: 999px;
   border: 1px solid transparent;
   background: rgba(7, 13, 24, 0.72);
+  white-space: nowrap;
 }
 
 .pill-strip button.active {
@@ -531,10 +560,19 @@ select:focus-visible {
 }
 
 .metric-card strong {
+  display: block;
+  max-width: 100%;
   font-family: 'Fira Code', monospace;
   font-size: clamp(1.38rem, 2.7vw, 2.12rem);
   line-height: 1.04;
-  word-break: break-word;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+.metric-card:not(.metric-card--featured) strong {
+  font-size: clamp(1.18rem, 1.8vw, 1.72rem);
 }
 
 .metric-card--featured strong {
@@ -1910,6 +1948,16 @@ select:focus-visible {
   .modal-header {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .chart-shell--secondary .chart-heading {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .chart-shell--secondary .chart-controls {
+    justify-content: flex-start;
+    width: 100%;
   }
 
   .timeline-value-group {
