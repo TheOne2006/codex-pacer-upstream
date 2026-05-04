@@ -22,6 +22,13 @@ use crate::pricing::{
   resolve_pricing,
 };
 
+const SQL_SESSIONS: &str = include_str!("../sql/queries/sessions.sql");
+const SQL_SESSIONS_FOR_ROOT: &str = include_str!("../sql/queries/sessions_for_root.sql");
+const SQL_USAGE_EVENTS: &str = include_str!("../sql/queries/usage_events.sql");
+const SQL_USAGE_EVENTS_FOR_ROOT: &str = include_str!("../sql/queries/usage_events_for_root.sql");
+const SQL_RATE_LIMIT_WINDOWS: &str = include_str!("../sql/queries/rate_limit_windows.sql");
+const SQL_QUOTA_SAMPLES: &str = include_str!("../sql/queries/quota_samples.sql");
+
 #[derive(Debug, Clone)]
 struct SessionRow {
   session_id: String,
@@ -1059,13 +1066,7 @@ fn build_composition_breakdown(
 }
 
 fn load_sessions(conn: &Connection) -> rusqlite::Result<HashMap<String, SessionRow>> {
-  let mut stmt = conn.prepare(
-    "
-    SELECT session_id, root_session_id, parent_session_id, title, source_state, source_path,
-           started_at, updated_at, agent_nickname, agent_role
-    FROM sessions
-    ",
-  )?;
+  let mut stmt = conn.prepare(SQL_SESSIONS)?;
   let rows = stmt.query_map([], |row| {
     Ok(SessionRow {
       session_id: row.get(0)?,
@@ -1093,14 +1094,7 @@ fn load_sessions_for_root_session(
   conn: &Connection,
   root_session_id: &str,
 ) -> rusqlite::Result<HashMap<String, SessionRow>> {
-  let mut stmt = conn.prepare(
-    "
-    SELECT session_id, root_session_id, parent_session_id, title, source_state, source_path,
-           started_at, updated_at, agent_nickname, agent_role
-    FROM sessions
-    WHERE root_session_id = ?1
-    ",
-  )?;
+  let mut stmt = conn.prepare(SQL_SESSIONS_FOR_ROOT)?;
   let rows = stmt.query_map([root_session_id], |row| {
     Ok(SessionRow {
       session_id: row.get(0)?,
@@ -1125,15 +1119,7 @@ fn load_sessions_for_root_session(
 }
 
 fn load_events(conn: &Connection) -> rusqlite::Result<Vec<EventRow>> {
-  let mut stmt = conn.prepare(
-    "
-    SELECT session_id, timestamp, model_id, input_tokens, cached_input_tokens,
-           output_tokens, reasoning_output_tokens, total_tokens, value_usd,
-           fast_mode_auto, fast_mode_effective
-    FROM usage_events
-    ORDER BY timestamp ASC, id ASC
-    ",
-  )?;
+  let mut stmt = conn.prepare(SQL_USAGE_EVENTS)?;
   let rows = stmt.query_map([], |row| {
     Ok(EventRow {
       session_id: row.get(0)?,
@@ -1154,19 +1140,7 @@ fn load_events(conn: &Connection) -> rusqlite::Result<Vec<EventRow>> {
 }
 
 fn load_events_for_root_session(conn: &Connection, root_session_id: &str) -> rusqlite::Result<Vec<EventRow>> {
-  let mut stmt = conn.prepare(
-    "
-    SELECT usage_events.session_id, usage_events.timestamp, usage_events.model_id,
-           usage_events.input_tokens, usage_events.cached_input_tokens,
-           usage_events.output_tokens, usage_events.reasoning_output_tokens,
-           usage_events.total_tokens, usage_events.value_usd,
-           usage_events.fast_mode_auto, usage_events.fast_mode_effective
-    FROM usage_events
-    INNER JOIN sessions ON sessions.session_id = usage_events.session_id
-    WHERE sessions.root_session_id = ?1
-    ORDER BY usage_events.timestamp ASC, usage_events.id ASC
-    ",
-  )?;
+  let mut stmt = conn.prepare(SQL_USAGE_EVENTS_FOR_ROOT)?;
   let rows = stmt.query_map([root_session_id], |row| {
     Ok(EventRow {
       session_id: row.get(0)?,
@@ -1340,15 +1314,7 @@ fn load_live_rate_limit_windows(
   bucket: &str,
   current_window: Option<RateLimitWindowSummary>,
 ) -> rusqlite::Result<Vec<RateLimitWindowSummary>> {
-  let mut stmt = conn.prepare(
-    "
-    SELECT window_start, resets_at
-    FROM rate_limit_samples
-    WHERE bucket = ?1
-    GROUP BY window_start, resets_at
-    ORDER BY window_start DESC, resets_at DESC
-    ",
-  )?;
+  let mut stmt = conn.prepare(SQL_RATE_LIMIT_WINDOWS)?;
   let rows = stmt.query_map(rusqlite::params![bucket], |row| {
     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
   })?;
@@ -1620,14 +1586,7 @@ fn live_sample(live_rate_limits: &LiveRateLimitSnapshot, bucket: &str) -> Option
 }
 
 fn load_quota_samples(conn: &Connection, window: &Window) -> Vec<QuotaSample> {
-  let mut stmt = match conn.prepare(
-    "
-    SELECT sample_timestamp, used_percent, window_start, resets_at
-    FROM rate_limit_samples
-    WHERE bucket = ?1
-    ORDER BY sample_timestamp ASC
-    ",
-  ) {
+  let mut stmt = match conn.prepare(SQL_QUOTA_SAMPLES) {
     Ok(stmt) => stmt,
     Err(_) => return Vec::new(),
   };
