@@ -161,6 +161,8 @@ impl Default for SubscriptionProfile {
 pub struct ConversationFilters {
   pub bucket: Option<String>,
   pub anchor: Option<String>,
+  pub custom_start: Option<String>,
+  pub custom_end: Option<String>,
   pub search: Option<String>,
   pub live_window_offset: Option<i64>,
 }

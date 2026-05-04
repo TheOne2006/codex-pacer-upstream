@@ -69,6 +69,7 @@ const BUCKETS: OverviewBucket[] = [
   'subscription_month',
   'month',
   'year',
+  'custom',
   'total',
 ]
 
@@ -78,6 +79,8 @@ function App() {
   const [bucket, setBucket] = useState<OverviewBucket>('subscription_month')
   const [liveWindowOffset, setLiveWindowOffset] = useState(0)
   const [anchor, setAnchor] = useState(todayInputValue())
+  const [customStart, setCustomStart] = useState(todayInputValue())
+  const [customEnd, setCustomEnd] = useState(todayInputValue())
   const [shareMode, setShareMode] = useState<ShareMode>('value')
   const [shareDimension, setShareDimension] = useState<ShareDimension>('model')
   const [overview, setOverview] = useState<OverviewResponse | null>(null)
@@ -121,11 +124,15 @@ function App() {
     latestLoadRequestIdRef.current = requestId
     const requestBucket = bucket
     const requestAnchor = bucketUsesAnchor(requestBucket) ? anchor : null
+    const requestCustomStart = requestBucket === 'custom' ? customStart : null
+    const requestCustomEnd = requestBucket === 'custom' ? customEnd : null
     const requestSearch = deferredSearch || null
     const requestLiveWindowOffset = requestBucket === 'five_hour' || requestBucket === 'seven_day' ? liveWindowOffset : 0
     lastRequestedQueryKeyRef.current = buildQueryKey(
       requestBucket,
       requestAnchor,
+      requestCustomStart,
+      requestCustomEnd,
       requestSearch,
       requestLiveWindowOffset,
     )
@@ -153,6 +160,8 @@ function App() {
         requestAnchor,
         requestSearch,
         requestLiveWindowOffset,
+        requestCustomStart,
+        requestCustomEnd,
       )
       if (requestId !== latestLoadRequestIdRef.current) {
         return
@@ -179,6 +188,8 @@ function App() {
           buildQueryKey(
             requestBucket,
             requestAnchor,
+            requestCustomStart,
+            requestCustomEnd,
             requestSearch,
             snapshot.overview.liveWindowOffset,
           ),
@@ -202,11 +213,13 @@ function App() {
         setIsBusy(false)
       }
     }
-  }, [anchor, bucket, deferredSearch, liveWindowOffset, t, waitForScanToSettle])
+  }, [anchor, bucket, customEnd, customStart, deferredSearch, liveWindowOffset, t, waitForScanToSettle])
 
   const currentQueryKey = buildQueryKey(
     bucket,
     bucketUsesAnchor(bucket) ? anchor : null,
+    bucket === 'custom' ? customStart : null,
+    bucket === 'custom' ? customEnd : null,
     deferredSearch || null,
     bucket === 'five_hour' || bucket === 'seven_day' ? liveWindowOffset : 0,
   )
@@ -391,7 +404,9 @@ function App() {
   const activeLiveWindowCount = activeOverview?.liveWindowCount ?? (isLiveBucket ? 1 : 0)
   const isHistoricalLiveWindow = isLiveBucket && activeLiveWindowOffset > 0
   const currentBucketLabel =
-    activeOverview?.bucket === 'subscription_month' && subscriptionProfile
+    activeOverview?.bucket === 'custom'
+      ? formatCustomRangeLabel(activeOverview.windowStart, activeOverview.windowEnd, language)
+      : activeOverview?.bucket === 'subscription_month' && subscriptionProfile
       ? t.bucketDescriptions.subscriptionMonth(subscriptionProfile.billingAnchorDay)
       : bucket === 'five_hour'
         ? isHistoricalLiveWindow
@@ -505,7 +520,37 @@ function App() {
                     </button>
                   ))}
                 </div>
-                {bucketUsesAnchor(bucket) ? (
+                {bucket === 'custom' ? (
+                  <div className="custom-range-controls">
+                    <label className="custom-range-field">
+                      <span>{t.common.start}</span>
+                      <input
+                        aria-label={t.common.customRangeStartDate}
+                        className="anchor-input custom-range-input"
+                        max={customEnd}
+                        name="customRangeStartDate"
+                        onChange={(event) => setCustomStart(event.target.value)}
+                        type="date"
+                        value={customStart}
+                      />
+                    </label>
+                    <span aria-hidden="true" className="range-separator">
+                      →
+                    </span>
+                    <label className="custom-range-field">
+                      <span>{t.common.end}</span>
+                      <input
+                        aria-label={t.common.customRangeEndDate}
+                        className="anchor-input custom-range-input"
+                        min={customStart}
+                        name="customRangeEndDate"
+                        onChange={(event) => setCustomEnd(event.target.value)}
+                        type="date"
+                        value={customEnd}
+                      />
+                    </label>
+                  </div>
+                ) : bucketUsesAnchor(bucket) ? (
                   <input
                     aria-label={anchorInputLabel}
                     className="anchor-input anchor-input-inline"
@@ -918,16 +963,29 @@ function MiniCard({ label, value, tone = 'secondary' }: MiniCardProps) {
 export default App
 
 function bucketUsesAnchor(bucket: OverviewBucket) {
-  return !['five_hour', 'seven_day', 'total'].includes(bucket)
+  return !['five_hour', 'seven_day', 'custom', 'total'].includes(bucket)
 }
 
 function buildQueryKey(
   bucket: OverviewBucket,
   anchor: string | null,
+  customStart: string | null,
+  customEnd: string | null,
   search: string | null,
   liveWindowOffset: number,
 ) {
-  return [bucket, anchor ?? '', search ?? '', String(liveWindowOffset)].join('::')
+  return [bucket, anchor ?? '', customStart ?? '', customEnd ?? '', search ?? '', String(liveWindowOffset)].join('::')
+}
+
+function formatCustomRangeLabel(windowStart: string | null, windowEnd: string | null, language: 'zh-CN' | 'en') {
+  return `${formatShortDate(windowStart, language)} → ${formatShortDate(inclusiveWindowEnd(windowEnd), language)}`
+}
+
+function inclusiveWindowEnd(windowEnd: string | null) {
+  if (!windowEnd) return null
+  const timestamp = new Date(windowEnd).getTime()
+  if (!Number.isFinite(timestamp)) return null
+  return new Date(timestamp - 1).toISOString()
 }
 
 function selectActiveRateLimitWindow(

@@ -102,10 +102,20 @@ fn getOverview(
   state: State<'_, AppState>,
   bucket: Option<String>,
   anchor: Option<String>,
+  custom_start: Option<String>,
+  custom_end: Option<String>,
   live_window_offset: Option<i64>,
 ) -> Result<OverviewResponse, String> {
   let live_rate_limits = maybe_live_rate_limits_for_bucket(state.inner(), bucket.as_deref(), live_window_offset)?;
-  get_overview(&state.db_path, bucket, anchor, live_rate_limits, live_window_offset)
+  get_overview(
+    &state.db_path,
+    bucket,
+    anchor,
+    custom_start,
+    custom_end,
+    live_rate_limits,
+    live_window_offset,
+  )
 }
 
 #[allow(non_snake_case)]
@@ -167,6 +177,8 @@ async fn loadDashboard(
   state: State<'_, AppState>,
   bucket: Option<String>,
   anchor: Option<String>,
+  custom_start: Option<String>,
+  custom_end: Option<String>,
   search: Option<String>,
   live_window_offset: Option<i64>,
 ) -> Result<DashboardSnapshot, String> {
@@ -179,6 +191,8 @@ async fn loadDashboard(
       &state.db_path,
       Some(normalized_bucket.clone()),
       anchor.clone(),
+      custom_start.clone(),
+      custom_end.clone(),
       search,
       live_rate_limits.clone(),
       live_window_offset,
@@ -434,6 +448,8 @@ fn current_menu_bar_title_parts(
       &state.db_path,
       Some(bucket.clone()),
       if bucket_uses_anchor(&bucket) { Some(anchor) } else { None },
+      None,
+      None,
       live_rate_limits.clone(),
       None,
     )?;
@@ -979,6 +995,8 @@ fn build_menu_bar_popup_snapshot(
     &state.db_path,
     Some(selected_bucket.clone()),
     anchor,
+    None,
+    None,
     if bucket_uses_live_rate_limits(&selected_bucket) {
       live_rate_limits.clone()
     } else {
