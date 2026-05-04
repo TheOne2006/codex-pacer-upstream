@@ -4,18 +4,17 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use chrono::{Local, LocalResult, TimeZone, Timelike};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection};
 use serde_json::Value;
 use walkdir::WalkDir;
 
 use crate::database::{
-  bool_to_i64, get_fast_mode_override, get_sync_settings, i64_to_bool, init_db, now_utc_string,
-  open_connection, replace_session_rate_limit_samples, set_last_scan_completed, set_last_scan_started,
+  bool_to_i64, get_sync_settings, init_db, now_utc_string, open_connection,
+  replace_session_rate_limit_samples, set_last_scan_completed, set_last_scan_started,
 };
 use crate::models::{RateLimitSampleRecord, RawSession, ScanResult, TokenUsage, UsageSnapshot};
 use crate::pricing::{
-  calculate_value_usd, is_codex_fast_mode_model, load_catalog_map, normalize_model_id, resolve_pricing,
-  seed_pricing_catalog,
+  calculate_value_usd, load_catalog_map, normalize_model_id, resolve_pricing, seed_pricing_catalog,
 };
 
 #[derive(Debug, Clone)]
@@ -186,17 +185,6 @@ fn import_state_session_id_mismatch(state: &ImportState, session_file: &SessionF
 }
 
 pub fn recalculate_session_values(conn: &Connection, session_id: &str) -> rusqlite::Result<()> {
-  let override_value = get_fast_mode_override(conn, session_id)?;
-  let (explicit_fast_mode, fast_mode_default): (Option<i64>, i64) = conn
-    .query_row(
-      "SELECT explicit_fast_mode, fast_mode_default FROM sessions WHERE session_id = ?1",
-      params![session_id],
-      |row| Ok((row.get(0)?, row.get(1)?)),
-    )
-    .optional()?
-    .unwrap_or((None, 0));
-  let explicit_fast_mode = explicit_fast_mode.map(i64_to_bool);
-  let fast_mode_default = i64_to_bool(fast_mode_default);
   let catalog = load_catalog_map(conn)?;
 
   let mut stmt = conn.prepare(
@@ -224,17 +212,14 @@ pub fn recalculate_session_values(conn: &Connection, session_id: &str) -> rusqli
 
   for item in events {
     let (id, model_id, usage) = item?;
-    let auto_fast = is_codex_fast_mode_model(&model_id) && explicit_fast_mode.unwrap_or(fast_mode_default);
-    let effective_fast = override_value.unwrap_or(auto_fast);
-    let value_usd =
-      calculate_value_usd(&usage, resolve_pricing(&catalog, &model_id).as_ref(), &model_id, effective_fast);
+    let value_usd = calculate_value_usd(&usage, resolve_pricing(&catalog, &model_id).as_ref());
     conn.execute(
       "
       UPDATE usage_events
-      SET value_usd = ?1, fast_mode_auto = ?2, fast_mode_effective = ?3
-      WHERE id = ?4
+      SET value_usd = ?1, fast_mode_auto = 0, fast_mode_effective = 0
+      WHERE id = ?2
       ",
-      params![value_usd, bool_to_i64(auto_fast), bool_to_i64(effective_fast), id],
+      params![value_usd, id],
     )?;
   }
 
@@ -646,15 +631,7 @@ fn persist_session(
   let tx = conn.transaction()?;
   let created_at = now_utc_string();
   let imported_at = created_at.clone();
-  let sync_settings = get_sync_settings(&tx)?;
-  let fast_mode_default = parsed
-    .snapshots
-    .iter()
-    .any(|snapshot| {
-      is_codex_fast_mode_model(&snapshot.model_id)
-        && parsed.explicit_fast_mode.is_none()
-        && sync_settings.default_fast_mode_for_new_gpt54_sessions
-    });
+  let fast_mode_default = false;
 
   tx.execute(
     "
@@ -708,7 +685,6 @@ fn persist_session(
   )?;
   replace_session_rate_limit_samples(&tx, &parsed.raw_session.session_id, &parsed.rate_limit_samples)?;
 
-  let override_value = get_fast_mode_override(&tx, &parsed.raw_session.session_id)?;
   let mut previous_usage: Option<TokenUsage> = None;
 
   for snapshot in &parsed.snapshots {
@@ -728,11 +704,8 @@ fn persist_session(
       continue;
     }
 
-    let auto_fast =
-      is_codex_fast_mode_model(&snapshot.model_id) && parsed.explicit_fast_mode.unwrap_or(fast_mode_default);
-    let effective_fast = override_value.unwrap_or(auto_fast);
     let resolved_pricing = resolve_pricing(catalog, &snapshot.model_id);
-    let value_usd = calculate_value_usd(&delta, resolved_pricing.as_ref(), &snapshot.model_id, effective_fast);
+    let value_usd = calculate_value_usd(&delta, resolved_pricing.as_ref());
 
     tx.execute(
       "
@@ -752,8 +725,8 @@ fn persist_session(
         delta.reasoning_output_tokens,
         delta.total_tokens,
         value_usd,
-        bool_to_i64(auto_fast),
-        bool_to_i64(effective_fast),
+        0,
+        0,
       ],
     )?;
   }
@@ -1114,6 +1087,7 @@ struct ImportState {
 mod tests {
   use super::*;
   use crate::database::{init_db, now_utc_string, open_connection};
+  use rusqlite::OptionalExtension;
   use tempfile::tempdir;
 
   #[test]
@@ -1162,7 +1136,7 @@ mod tests {
   }
 
   #[test]
-  fn scan_prices_gpt_55_with_codex_fast_mode_multiplier() {
+  fn scan_prices_gpt_55_fast_mode_does_not_change_api_value() {
     let directory = tempdir().expect("tempdir");
     let codex_home = directory.path().join("codex-home");
     let sessions_dir = codex_home.join("sessions");
@@ -1195,9 +1169,9 @@ mod tests {
     let standard = (75.0 / 1_000_000.0) * 5.0
       + (25.0 / 1_000_000.0) * 0.5
       + (40.0 / 1_000_000.0) * 30.0;
-    assert!((value_usd - standard * 2.5).abs() < 1e-9);
-    assert_eq!(fast_mode_auto, 1);
-    assert_eq!(fast_mode_effective, 1);
+    assert!((value_usd - standard).abs() < 1e-9);
+    assert_eq!(fast_mode_auto, 0);
+    assert_eq!(fast_mode_effective, 0);
   }
 
   #[test]

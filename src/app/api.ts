@@ -26,7 +26,6 @@ function createMockSyncSettings(): SyncSettings {
     autoScanEnabled: false,
     autoScanIntervalMinutes: 5,
     liveQuotaRefreshIntervalSeconds: 300,
-    defaultFastModeForNewGpt54Sessions: false,
     hideDockIconWhenMenuBarVisible: false,
     showMenuBarLogo: true,
     showMenuBarDailyApiValue: true,
@@ -294,10 +293,6 @@ export type MenuBarPopupAction = 'open_dashboard' | 'open_settings' | 'hide' | '
 
 export async function handleMenuBarPopupAction(action: MenuBarPopupAction) {
   return invokeOrMock('handleMenuBarPopupAction', { action }, () => true)
-}
-
-export async function setFastModeOverride(sessionId: string, overrideValue: boolean | null) {
-  return invokeOrMock('setFastModeOverride', { sessionId, overrideValue }, () => true)
 }
 
 export async function getSyncSettings() {

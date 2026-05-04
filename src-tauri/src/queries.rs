@@ -10,7 +10,7 @@ use chrono::{
 use rusqlite::Connection;
 use serde_json::Value;
 
-use crate::database::{get_fast_mode_override, get_subscription_profile, open_connection};
+use crate::database::{get_subscription_profile, open_connection};
 use crate::models::{
   CompositionShare, ConversationDetail, ConversationFilters, ConversationListItem,
   ConversationSessionSummary, ConversationTurnPoint, LiveRateLimitSnapshot, ModelShare,
@@ -18,8 +18,8 @@ use crate::models::{
   TrendPoint,
 };
 use crate::pricing::{
-  calculate_value_usd, display_name_for_model, fast_mode_multiplier_for_model, is_codex_fast_mode_model,
-  load_catalog_map, model_color, normalize_model_id, resolve_pricing,
+  calculate_value_usd, display_name_for_model, load_catalog_map, model_color, normalize_model_id,
+  resolve_pricing,
 };
 
 #[derive(Debug, Clone)]
@@ -34,7 +34,6 @@ struct SessionRow {
   updated_at: Option<String>,
   agent_nickname: Option<String>,
   agent_role: Option<String>,
-  fast_mode_default: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -473,7 +472,6 @@ pub fn get_conversation_detail(db_path: &Path, root_session_id: &str) -> Result<
   let mut per_session: HashMap<String, ConversationSessionAccumulator> = HashMap::new();
   let mut detail_turns = Vec::new();
   let mut conversation_events = Vec::new();
-  let mut fast_mode_overrides = HashMap::new();
   let mut seen_real_turn_ids = HashSet::new();
 
   for session in &conversation_sessions {
@@ -483,8 +481,6 @@ pub fn get_conversation_detail(db_path: &Path, root_session_id: &str) -> Result<
     started_at = min_option_string(started_at, session.started_at.clone());
     updated_at = max_option_string(updated_at, session.updated_at.clone());
     source_states.insert(session.source_state.clone());
-    let fast_mode_override = get_fast_mode_override(&conn, &session.session_id).map_err(|error| error.to_string())?;
-    fast_mode_overrides.insert(session.session_id.clone(), fast_mode_override);
     per_session.insert(
       session.session_id.clone(),
       ConversationSessionAccumulator {
@@ -541,11 +537,7 @@ pub fn get_conversation_detail(db_path: &Path, root_session_id: &str) -> Result<
   }
 
   for session in &conversation_sessions {
-    let fast_mode_override = fast_mode_overrides
-      .get(&session.session_id)
-      .copied()
-      .flatten();
-    let turns = build_turns_for_session(session, fast_mode_override, &catalog)?;
+    let turns = build_turns_for_session(session, &catalog)?;
     let mut turns = filter_replayed_turns_for_session(session, turns, &mut seen_real_turn_ids);
     detail_turns.append(&mut turns);
   }
@@ -560,9 +552,6 @@ pub fn get_conversation_detail(db_path: &Path, root_session_id: &str) -> Result<
   let mut session_summaries = Vec::new();
   for session in conversation_sessions {
     let summary = per_session.remove(&session.session_id).unwrap_or_default();
-    let fast_mode_override = fast_mode_overrides
-      .remove(&session.session_id)
-      .unwrap_or(None);
     session_summaries.push(ConversationSessionSummary {
       session_id: session.session_id.clone(),
       parent_session_id: summary.parent_session_id,
@@ -579,7 +568,7 @@ pub fn get_conversation_detail(db_path: &Path, root_session_id: &str) -> Result<
       api_value_usd: summary.api_value_usd,
       fast_mode_auto: summary.fast_mode_auto,
       fast_mode_effective: summary.fast_mode_effective,
-      fast_mode_override,
+      fast_mode_override: None,
       source_state: summary.source_state,
       source_path: summary.source_path,
       is_subagent: session.parent_session_id.is_some(),
@@ -630,7 +619,6 @@ pub fn get_conversation_detail(db_path: &Path, root_session_id: &str) -> Result<
 
 fn build_turns_for_session(
   session: &SessionRow,
-  fast_mode_override: Option<bool>,
   catalog: &HashMap<String, PricingCatalogEntry>,
 ) -> Result<Vec<ConversationTurnPoint>, String> {
   let Some(source_path) = session.source_path.as_deref() else {
@@ -646,17 +634,9 @@ fn build_turns_for_session(
   let mut active_turn_index: Option<usize> = None;
   let mut turn_sequence = 0usize;
   let mut current_model: Option<String> = None;
-  let mut explicit_fast_mode: Option<bool> = None;
   let mut previous_usage: Option<TokenUsage> = None;
 
   for line in BufReader::new(file).lines().map_while(Result::ok) {
-    if line.contains("\"fast_mode\":true") || line.contains("\"quick_mode\":true") {
-      explicit_fast_mode = Some(true);
-    }
-    if line.contains("\"fast_mode\":false") || line.contains("\"quick_mode\":false") {
-      explicit_fast_mode = Some(false);
-    }
-
     let Ok(value) = serde_json::from_str::<Value>(&line) else {
       continue;
     };
@@ -775,11 +755,7 @@ fn build_turns_for_session(
               session.session_id.clone(),
             );
             let model_id = current_model.clone().unwrap_or_else(|| "unknown".to_string());
-            let auto_fast =
-              is_codex_fast_mode_model(&model_id) && explicit_fast_mode.unwrap_or(session.fast_mode_default);
-            let effective_fast = fast_mode_override.unwrap_or(auto_fast);
-            let value_usd =
-              calculate_value_usd(&delta, resolve_pricing(catalog, &model_id).as_ref(), &model_id, effective_fast);
+            let value_usd = calculate_value_usd(&delta, resolve_pricing(catalog, &model_id).as_ref());
             let turn = &mut turns[turn_index];
             turn.model_ids.insert(model_id);
             turn.input_tokens += delta.input_tokens;
@@ -788,7 +764,7 @@ fn build_turns_for_session(
             turn.reasoning_output_tokens += delta.reasoning_output_tokens;
             turn.total_tokens += delta.total_tokens;
             turn.value_usd += value_usd;
-            turn.fast_mode_effective |= effective_fast;
+            turn.fast_mode_effective = false;
             update_turn_activity(turn, timestamp.as_deref());
           }
           _ => {}
@@ -1062,18 +1038,12 @@ fn build_composition_breakdown(
     let Some(pricing) = resolve_pricing(catalog, &event.model_id) else {
       continue;
     };
-    let multiplier = if event.fast_mode_effective {
-      fast_mode_multiplier_for_model(&event.model_id)
-    } else {
-      1.0
-    };
     breakdown[0].api_value_usd +=
-      ((event.input_tokens - event.cached_input_tokens).max(0) as f64 * multiplier / 1_000_000.0)
+      ((event.input_tokens - event.cached_input_tokens).max(0) as f64 / 1_000_000.0)
         * pricing.input_price_per_million;
     breakdown[1].api_value_usd +=
-      (event.cached_input_tokens as f64 * multiplier / 1_000_000.0) * pricing.cached_input_price_per_million;
-    breakdown[2].api_value_usd +=
-      (event.output_tokens as f64 * multiplier / 1_000_000.0) * pricing.output_price_per_million;
+      (event.cached_input_tokens as f64 / 1_000_000.0) * pricing.cached_input_price_per_million;
+    breakdown[2].api_value_usd += (event.output_tokens as f64 / 1_000_000.0) * pricing.output_price_per_million;
   }
 
   breakdown
@@ -1092,7 +1062,7 @@ fn load_sessions(conn: &Connection) -> rusqlite::Result<HashMap<String, SessionR
   let mut stmt = conn.prepare(
     "
     SELECT session_id, root_session_id, parent_session_id, title, source_state, source_path,
-           started_at, updated_at, agent_nickname, agent_role, fast_mode_default
+           started_at, updated_at, agent_nickname, agent_role
     FROM sessions
     ",
   )?;
@@ -1108,7 +1078,6 @@ fn load_sessions(conn: &Connection) -> rusqlite::Result<HashMap<String, SessionR
       updated_at: row.get(7)?,
       agent_nickname: row.get(8)?,
       agent_role: row.get(9)?,
-      fast_mode_default: row.get::<_, i64>(10)? != 0,
     })
   })?;
 
@@ -1127,7 +1096,7 @@ fn load_sessions_for_root_session(
   let mut stmt = conn.prepare(
     "
     SELECT session_id, root_session_id, parent_session_id, title, source_state, source_path,
-           started_at, updated_at, agent_nickname, agent_role, fast_mode_default
+           started_at, updated_at, agent_nickname, agent_role
     FROM sessions
     WHERE root_session_id = ?1
     ",
@@ -1144,7 +1113,6 @@ fn load_sessions_for_root_session(
       updated_at: row.get(7)?,
       agent_nickname: row.get(8)?,
       agent_role: row.get(9)?,
-      fast_mode_default: row.get::<_, i64>(10)? != 0,
     })
   })?;
 
@@ -1941,9 +1909,7 @@ mod tests {
         updated_at: None,
         agent_nickname: None,
         agent_role: None,
-        fast_mode_default: true,
       },
-      None,
       &HashMap::new(),
     )
     .expect("build turns");
@@ -1988,9 +1954,7 @@ mod tests {
         updated_at: None,
         agent_nickname: None,
         agent_role: None,
-        fast_mode_default: true,
       },
-      None,
       &HashMap::new(),
     )
     .expect("build turns");
@@ -2025,7 +1989,6 @@ mod tests {
       updated_at: None,
       agent_nickname: None,
       agent_role: None,
-      fast_mode_default: true,
     };
     let child_session = SessionRow {
       session_id: "child-session".to_string(),
@@ -2038,7 +2001,6 @@ mod tests {
       updated_at: None,
       agent_nickname: Some("Scout".to_string()),
       agent_role: Some("explore".to_string()),
-      fast_mode_default: true,
     };
 
     let root_turn = ConversationTurnPoint {
@@ -2123,7 +2085,6 @@ mod tests {
       updated_at: None,
       agent_nickname: None,
       agent_role: None,
-      fast_mode_default: true,
     };
     let child_session = SessionRow {
       session_id: "child-session".to_string(),
@@ -2136,7 +2097,6 @@ mod tests {
       updated_at: None,
       agent_nickname: None,
       agent_role: None,
-      fast_mode_default: true,
     };
 
     let root_turn = ConversationTurnPoint {
