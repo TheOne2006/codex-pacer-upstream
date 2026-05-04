@@ -42,39 +42,43 @@ export function ModelShareChart({
         </div>
         <div className="chart-controls">
           {onDimensionChange ? (
-            <div className="pill-strip">
-              <button
-                className={dimension === 'model' ? 'active' : ''}
-                onClick={() => onDimensionChange('model')}
-                type="button"
-              >
-                {t.charts.byModel}
-              </button>
-              <button
-                className={dimension === 'composition' ? 'active' : ''}
-                onClick={() => onDimensionChange('composition')}
-                type="button"
-              >
-                {t.charts.byStructure}
-              </button>
+            <div className="chart-control-group" role="group" aria-label={t.charts.dimensionControlLabel}>
+              <div className="pill-strip">
+                <button
+                  className={dimension === 'model' ? 'active' : ''}
+                  onClick={() => onDimensionChange('model')}
+                  type="button"
+                >
+                  {t.charts.byModel}
+                </button>
+                <button
+                  className={dimension === 'composition' ? 'active' : ''}
+                  onClick={() => onDimensionChange('composition')}
+                  type="button"
+                >
+                  {t.charts.byStructure}
+                </button>
+              </div>
             </div>
           ) : null}
           {onModeChange ? (
-            <div className="pill-strip">
-              <button
-                className={mode === 'value' ? 'active' : ''}
-                onClick={() => onModeChange('value')}
-                type="button"
-              >
-                {t.charts.byValue}
-              </button>
-              <button
-                className={mode === 'tokens' ? 'active' : ''}
-                onClick={() => onModeChange('tokens')}
-                type="button"
-              >
-                {t.charts.byTokens}
-              </button>
+            <div className="chart-control-group" role="group" aria-label={t.charts.metricControlLabel}>
+              <div className="pill-strip">
+                <button
+                  className={mode === 'value' ? 'active' : ''}
+                  onClick={() => onModeChange('value')}
+                  type="button"
+                >
+                  {t.charts.byValue}
+                </button>
+                <button
+                  className={mode === 'tokens' ? 'active' : ''}
+                  onClick={() => onModeChange('tokens')}
+                  type="button"
+                >
+                  {t.charts.byTokens}
+                </button>
+              </div>
             </div>
           ) : null}
         </div>
@@ -122,14 +126,16 @@ export function ModelShareChart({
           ) : (
             <div className="share-empty">{t.charts.noShareData}</div>
           )}
-          <div className="share-center">
-            <span>{mode === 'value' ? t.charts.apiValue : t.charts.tokens}</span>
-            <strong>
-              {mode === 'value'
-                ? formatUsd(totalValue, language)
-                : formatTokenCount(totalTokens, language)}
-            </strong>
-          </div>
+          {hasRenderableData ? (
+            <div className="share-center">
+              <span>{mode === 'value' ? t.charts.apiValue : t.charts.tokens}</span>
+              <strong>
+                {mode === 'value'
+                  ? formatUsd(totalValue, language)
+                  : formatTokenCount(totalTokens, language)}
+              </strong>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>

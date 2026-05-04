@@ -115,6 +115,8 @@ export type TranslationSet = {
     apiValue: string
     tokens: string
     noShareData: string
+    dimensionControlLabel: string
+    metricControlLabel: string
     byModel: string
     byStructure: string
     byValue: string
@@ -360,6 +362,8 @@ const translations: Record<AppLanguage, TranslationSet> = {
       apiValue: 'API 价值',
       tokens: 'Tokens',
       noShareData: '当前窗口没有可用占比数据。',
+      dimensionControlLabel: '分布维度',
+      metricControlLabel: '分布指标',
       byModel: '按模型',
       byStructure: '按结构',
       byValue: '按价值',
@@ -599,6 +603,8 @@ const translations: Record<AppLanguage, TranslationSet> = {
       apiValue: 'API value',
       tokens: 'Tokens',
       noShareData: 'No share data in this window.',
+      dimensionControlLabel: 'Distribution dimension',
+      metricControlLabel: 'Distribution metric',
       byModel: 'By model',
       byStructure: 'By structure',
       byValue: 'By value',

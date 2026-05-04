@@ -898,7 +898,7 @@ function MetricCard({
       }`}
     >
       <span className="metric-label">{caption}</span>
-      <strong>{value}</strong>
+      <strong title={value}>{value}</strong>
       {note ? <span className="stat-caption">{note}</span> : null}
     </section>
   )
