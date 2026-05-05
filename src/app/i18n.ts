@@ -189,6 +189,10 @@ export type TranslationSet = {
     speedTitle: string
     speedHint: string
     sevenDayUsageChart: string
+    chartLegendRemaining: string
+    chartLegendReference: string
+    chartLegendCurrent: string
+    chartValueBadge: string
     speedStatus: {
       fast: string
       healthy: string
@@ -506,6 +510,10 @@ const translations: Record<AppLanguage, TranslationSet> = {
       speedTitle: '7天节奏',
       speedHint: '100% = 额度消耗与时间同步；低于 100% 偏快，高于 100% 偏慢',
       sevenDayUsageChart: '7 天使用情况折线图',
+      chartLegendRemaining: '剩余额度',
+      chartLegendReference: '时间基准',
+      chartLegendCurrent: '当前',
+      chartValueBadge: 'API 价值',
       speedStatus: {
         fast: '放慢',
         healthy: '正常',
@@ -816,6 +824,10 @@ const translations: Record<AppLanguage, TranslationSet> = {
       speedTitle: '7D pace',
       speedHint: '100% = quota and time are aligned; below 100% is faster, above 100% is slower',
       sevenDayUsageChart: '7-day usage line chart',
+      chartLegendRemaining: 'Blue: quota left',
+      chartLegendReference: 'Dashed: time baseline',
+      chartLegendCurrent: 'Dot: current',
+      chartValueBadge: 'API value',
       speedStatus: {
         fast: 'Slow down',
         healthy: 'On pace',

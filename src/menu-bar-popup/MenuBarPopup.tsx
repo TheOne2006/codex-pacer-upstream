@@ -243,6 +243,7 @@ export function MenuBarPopup() {
           <>
             <section className="popup-hero-grid">
               <QuotaRingCard
+                available={Boolean(snapshot.quota5h)}
                 label={t.buckets.five_hour}
                 percent={snapshot.quota5h?.remainingPercent ?? 0}
                 timePercent={computeRemainingTimePercent(snapshot.quota5h?.resetsAt ?? null, snapshot.quota5h?.windowStart ?? null)}
@@ -254,6 +255,7 @@ export function MenuBarPopup() {
                 tone="warm"
               />
               <QuotaRingCard
+                available={Boolean(snapshot.quota7d)}
                 label={t.buckets.seven_day}
                 percent={snapshot.quota7d?.remainingPercent ?? 0}
                 timePercent={computeRemainingTimePercent(snapshot.quota7d?.resetsAt ?? null, snapshot.quota7d?.windowStart ?? null)}

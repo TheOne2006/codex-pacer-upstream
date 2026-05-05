@@ -28,7 +28,7 @@ const PADDING_BOTTOM = 14
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000
 
 export function PopupSevenDayUsageChart({ ariaLabel, data, fetchedAt, quota, speed }: PopupSevenDayUsageChartProps) {
-  const { language } = useI18n()
+  const { language, t } = useI18n()
   const dataTimes = data
     .map((point) => toTimestamp(point.timestamp))
     .filter((value): value is number => value !== null)
@@ -42,6 +42,7 @@ export function PopupSevenDayUsageChart({ ariaLabel, data, fetchedAt, quota, spe
 
   const valuePoints = buildValuePoints(data, quota, currentTime, windowStart, safeWindowEnd)
   const plotPoints = valuePoints.map((point) => toPlotPoint(point, windowStart, safeWindowEnd))
+  const hasChartData = plotPoints.length > 0
   const actualPath = buildSmoothPath(plotPoints)
   const areaPath = buildAreaPath(plotPoints)
   const referenceStart = toPlotPoint({ time: windowStart, value: 100 }, windowStart, safeWindowEnd)
@@ -59,61 +60,84 @@ export function PopupSevenDayUsageChart({ ariaLabel, data, fetchedAt, quota, spe
 
   return (
     <section aria-label={ariaLabel} className="popup-seven-day-chart">
-      {speed ? (
-        <div className={`popup-seven-day-speed-badge popup-seven-day-speed-badge--${speed.status}`}>
-          {speed.emoji ? (
-            <span aria-hidden="true" className="popup-seven-day-speed-emoji">
-              {speed.emoji}
-            </span>
-          ) : null}
-          <strong>{speed.displayValue}</strong>
-        </div>
-      ) : null}
-      <div className="popup-seven-day-value-badge">
-        <span aria-hidden="true" className="popup-seven-day-badge-emoji">
-          💵
-        </span>
-        <strong>{formatUsd(apiValueUsd, language)}</strong>
-      </div>
-      <svg aria-hidden="true" className="popup-seven-day-svg" focusable="false" viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}>
-        <defs>
-          <linearGradient id="popupSevenDayUsageFill" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor="#76c5ff" stopOpacity="0.24" />
-            <stop offset="100%" stopColor="#76c5ff" stopOpacity="0" />
-          </linearGradient>
-          <filter id="popupSevenDayCurrentGlow" x="-80%" y="-80%" width="260%" height="260%">
-            <feGaussianBlur stdDeviation="4" result="blur" />
-            <feColorMatrix
-              in="blur"
-              result="glow"
-              type="matrix"
-              values="0 0 0 0 0.462 0 0 0 0 0.773 0 0 0 0 1 0 0 0 0.7 0"
+      {hasChartData ? (
+        <>
+          <div className="popup-seven-day-badges">
+            <div className="popup-seven-day-value-badge">
+              <span aria-hidden="true" className="popup-seven-day-badge-emoji">
+                💵
+              </span>
+              <span className="popup-seven-day-badge-label">{t.popup.chartValueBadge}</span>
+              <strong>{formatUsd(apiValueUsd, language)}</strong>
+            </div>
+            {speed ? (
+              <div className={`popup-seven-day-speed-badge popup-seven-day-speed-badge--${speed.status}`}>
+                {speed.emoji ? (
+                  <span aria-hidden="true" className="popup-seven-day-speed-emoji">
+                    {speed.emoji}
+                  </span>
+                ) : null}
+                <strong>{speed.displayValue}</strong>
+              </div>
+            ) : null}
+          </div>
+          <svg aria-hidden="true" className="popup-seven-day-svg" focusable="false" viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}>
+            <defs>
+              <linearGradient id="popupSevenDayUsageFill" x1="0" x2="0" y1="0" y2="1">
+                <stop offset="0%" stopColor="#76c5ff" stopOpacity="0.24" />
+                <stop offset="100%" stopColor="#76c5ff" stopOpacity="0" />
+              </linearGradient>
+              <filter id="popupSevenDayCurrentGlow" x="-80%" y="-80%" width="260%" height="260%">
+                <feGaussianBlur stdDeviation="4" result="blur" />
+                <feColorMatrix
+                  in="blur"
+                  result="glow"
+                  type="matrix"
+                  values="0 0 0 0 0.462 0 0 0 0 0.773 0 0 0 0 1 0 0 0 0.7 0"
+                />
+                <feMerge>
+                  <feMergeNode in="glow" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+            </defs>
+            <rect className="popup-seven-day-plot" height={CHART_HEIGHT} rx="16" width={CHART_WIDTH} x="0" y="0" />
+            {dayLines}
+            {horizontalLines}
+            <line
+              className="popup-seven-day-reference"
+              x1={referenceStart.x}
+              x2={referenceEnd.x}
+              y1={referenceStart.y}
+              y2={referenceEnd.y}
             />
-            <feMerge>
-              <feMergeNode in="glow" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
-        </defs>
-        <rect className="popup-seven-day-plot" height={CHART_HEIGHT} rx="16" width={CHART_WIDTH} x="0" y="0" />
-        {dayLines}
-        {horizontalLines}
-        <line
-          className="popup-seven-day-reference"
-          x1={referenceStart.x}
-          x2={referenceEnd.x}
-          y1={referenceStart.y}
-          y2={referenceEnd.y}
-        />
-        {areaPath ? <path className="popup-seven-day-area" d={areaPath} /> : null}
-        {actualPath ? <path className="popup-seven-day-line" d={actualPath} /> : null}
-        {currentPoint ? (
-          <g className="popup-seven-day-current" filter="url(#popupSevenDayCurrentGlow)">
-            <circle className="popup-seven-day-current-halo" cx={currentPoint.x} cy={currentPoint.y} r="9" />
-            <circle className="popup-seven-day-current-dot" cx={currentPoint.x} cy={currentPoint.y} r="4.5" />
-          </g>
-        ) : null}
-      </svg>
+            {areaPath ? <path className="popup-seven-day-area" d={areaPath} /> : null}
+            {actualPath ? <path className="popup-seven-day-line" d={actualPath} /> : null}
+            {currentPoint ? (
+              <g className="popup-seven-day-current" filter="url(#popupSevenDayCurrentGlow)">
+                <circle className="popup-seven-day-current-halo" cx={currentPoint.x} cy={currentPoint.y} r="9" />
+                <circle className="popup-seven-day-current-dot" cx={currentPoint.x} cy={currentPoint.y} r="4.5" />
+              </g>
+            ) : null}
+          </svg>
+          <div className="popup-seven-day-legend" aria-label={ariaLabel}>
+            <span className="popup-seven-day-legend-item">
+              <i className="popup-seven-day-legend-mark popup-seven-day-legend-mark--remaining" aria-hidden="true" />
+              {t.popup.chartLegendRemaining}
+            </span>
+            <span className="popup-seven-day-legend-item">
+              <i className="popup-seven-day-legend-mark popup-seven-day-legend-mark--reference" aria-hidden="true" />
+              {t.popup.chartLegendReference}
+            </span>
+            <span className="popup-seven-day-legend-item">
+              <i className="popup-seven-day-legend-mark popup-seven-day-legend-mark--current" aria-hidden="true" />
+              {t.popup.chartLegendCurrent}
+            </span>
+          </div>
+        </>
+      ) : (
+        <div className="popup-seven-day-empty">{t.common.noData}</div>
+      )}
     </section>
   )
 }
