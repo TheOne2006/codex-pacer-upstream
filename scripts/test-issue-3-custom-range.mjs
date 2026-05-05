@@ -7,7 +7,11 @@ const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const appSource = readFileSync(join(repoRoot, 'src/App.tsx'), 'utf8')
 const apiSource = readFileSync(join(repoRoot, 'src/app/api.ts'), 'utf8')
 const typeSource = readFileSync(join(repoRoot, 'src/app/types.ts'), 'utf8')
-const i18nSource = readFileSync(join(repoRoot, 'src/app/i18n.ts'), 'utf8')
+const i18nSource = [
+  readFileSync(join(repoRoot, 'src/app/i18n.ts'), 'utf8'),
+  readFileSync(join(repoRoot, 'src/i18n/locales/zhCN.ts'), 'utf8'),
+  readFileSync(join(repoRoot, 'src/i18n/locales/en.ts'), 'utf8'),
+].join('\n')
 
 assert.match(
   typeSource,
