@@ -1928,6 +1928,19 @@ select:focus-visible {
   font-weight: 700;
 }
 
+.subscription-record-mode-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--text-primary);
+  font-size: 0.84rem;
+  font-weight: 650;
+}
+
 .subscription-record-amount {
   color: var(--text-strong);
   font-family: 'Fira Code', monospace;
@@ -1956,6 +1969,49 @@ select:focus-visible {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
+}
+
+.segmented-control {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  padding: 4px;
+  border-radius: 16px;
+  border: 1px solid var(--line-subtle);
+  background: rgba(4, 9, 16, 0.46);
+}
+
+.segmented-control-button {
+  display: inline-flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text-muted);
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease;
+}
+
+.segmented-control-button:hover {
+  color: var(--text-primary);
+  border-color: rgba(96, 165, 250, 0.22);
+}
+
+.segmented-control-button.is-active {
+  background: rgba(30, 64, 175, 0.28);
+  border-color: rgba(96, 165, 250, 0.34);
+  color: var(--text-strong);
+}
+
+.segmented-control-button:focus-visible {
+  outline: 3px solid rgba(96, 165, 250, 0.32);
+  outline-offset: 2px;
 }
 
 .subscription-record-form-actions {

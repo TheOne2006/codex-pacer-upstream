@@ -358,7 +358,7 @@ fn build_conversation_list(
     filters.live_window_offset,
   )?
   .window;
-  let subscription_cost_usd = subscription_cost_for_window(&window, subscription_records);
+  let subscription_cost_usd = subscription_cost_for_overview(&window, subscription_records);
   let search = filters.search.unwrap_or_default().to_ascii_lowercase();
 
   let mut groups: BTreeMap<String, ConversationAccumulator> = BTreeMap::new();
@@ -468,12 +468,35 @@ fn build_conversation_list(
   Ok(items)
 }
 
-pub fn get_conversation_detail(db_path: &Path, root_session_id: &str) -> Result<ConversationDetail, String> {
+pub fn get_conversation_detail(
+  db_path: &Path,
+  root_session_id: &str,
+  filters: Option<ConversationFilters>,
+  live_rate_limits: Option<LiveRateLimitSnapshot>,
+) -> Result<ConversationDetail, String> {
   let conn = open_connection(db_path).map_err(|error| error.to_string())?;
   let sessions = load_sessions_for_root_session(&conn, root_session_id).map_err(|error| error.to_string())?;
   let events = load_events_for_root_session(&conn, root_session_id).map_err(|error| error.to_string())?;
+  let all_events = load_events(&conn).map_err(|error| error.to_string())?;
+  let profile = get_subscription_profile(&conn).map_err(|error| error.to_string())?;
   let subscription_records = list_subscription_records(&conn).map_err(|error| error.to_string())?;
   let catalog = load_catalog_map(&conn).map_err(|error| error.to_string())?;
+  let active_window = filters
+    .map(|filters| {
+      resolve_window(
+        &conn,
+        filters.bucket,
+        filters.anchor,
+        filters.custom_start,
+        filters.custom_end,
+        &all_events,
+        profile.billing_anchor_day,
+        live_rate_limits.as_ref(),
+        filters.live_window_offset,
+      )
+      .map(|resolved| resolved.window)
+    })
+    .transpose()?;
 
   let mut conversation_sessions = sessions.values().cloned().collect::<Vec<_>>();
 
@@ -531,6 +554,13 @@ pub fn get_conversation_detail(db_path: &Path, root_session_id: &str) -> Result<
 
   for event in &events {
     if !sessions.contains_key(&event.session_id) {
+      continue;
+    }
+    if active_window
+      .as_ref()
+      .map(|window| !event_in_window(event, window))
+      .unwrap_or(false)
+    {
       continue;
     }
 
@@ -616,11 +646,10 @@ pub fn get_conversation_detail(db_path: &Path, root_session_id: &str) -> Result<
   if title.trim().is_empty() {
     title = root_session_id.to_string();
   }
-  let subscription_cost_usd = subscription_records
-    .iter()
-    .filter(|record| record.amount_usd > 0.0 && record.amount_usd.is_finite())
-    .map(|record| record.amount_usd)
-    .sum::<f64>();
+  let subscription_cost_usd = active_window
+    .as_ref()
+    .map(|window| subscription_cost_for_overview(window, &subscription_records))
+    .unwrap_or_else(|| subscription_cost_for_detail_events(&conversation_events, &subscription_records));
 
   Ok(ConversationDetail {
     root_session_id: root_session_id.to_string(),
@@ -1567,7 +1596,7 @@ fn custom_window_uses_monthly_bins(window: &Window) -> bool {
 fn subscription_cost_for_window(window: &Window, records: &[SubscriptionRecord]) -> f64 {
   records
     .iter()
-    .filter_map(|record| subscription_record_cost_for_window(record, window))
+    .map(|record| subscription_record_cost_for_window(record, window))
     .sum()
 }
 
@@ -1575,34 +1604,117 @@ fn subscription_cost_for_overview(window: &Window, records: &[SubscriptionRecord
   if window.bucket == "total" {
     return records
       .iter()
-      .filter(|record| record.amount_usd > 0.0 && record.amount_usd.is_finite())
-      .map(|record| record.amount_usd)
+      .map(|record| subscription_record_total_cost_for_window(record, window))
       .sum();
   }
 
   subscription_cost_for_window(window, records)
 }
 
-fn subscription_record_cost_for_window(
+fn subscription_cost_for_detail_events(events: &[EventRow], records: &[SubscriptionRecord]) -> f64 {
+  let Some(first) = events
+    .iter()
+    .filter_map(|event| parse_rfc3339_local(&event.timestamp))
+    .min()
+  else {
+    return 0.0;
+  };
+  let Some(last) = events
+    .iter()
+    .filter_map(|event| parse_rfc3339_local(&event.timestamp))
+    .max()
+  else {
+    return 0.0;
+  };
+  let start_date = first.date_naive();
+  let end_date = last
+    .date_naive()
+    .checked_add_days(Days::new(1))
+    .unwrap_or(last.date_naive());
+  let (Ok(start), Ok(end)) = (local_midnight(start_date), local_midnight(end_date)) else {
+    return 0.0;
+  };
+  let window = Window {
+    bucket: "total".to_string(),
+    anchor: start_date.format("%Y-%m-%d").to_string(),
+    start,
+    end,
+  };
+  subscription_cost_for_overview(&window, records)
+}
+
+fn subscription_record_cost_for_window(record: &SubscriptionRecord, window: &Window) -> f64 {
+  subscription_record_cycles(record, window)
+    .into_iter()
+    .map(|(service_start, service_end)| prorated_subscription_cost(record.amount_usd, service_start, service_end, window))
+    .sum()
+}
+
+fn subscription_record_total_cost_for_window(record: &SubscriptionRecord, window: &Window) -> f64 {
+  subscription_record_cycles(record, window)
+    .into_iter()
+    .filter(|(service_start, service_end)| service_end > &window.start && service_start < &window.end)
+    .map(|_| record.amount_usd)
+    .sum()
+}
+
+fn subscription_record_cycles(
   record: &SubscriptionRecord,
   window: &Window,
-) -> Option<f64> {
+) -> Vec<(DateTime<Local>, DateTime<Local>)> {
   if record.amount_usd <= 0.0 || !record.amount_usd.is_finite() {
-    return None;
+    return Vec::new();
   }
   let service_start = parse_date(&record.service_start)
     .ok()
-    .and_then(|date| local_midnight(date).ok())?;
+    .and_then(|date| local_midnight(date).ok());
   let service_end = parse_date(&record.service_end)
     .ok()
-    .and_then(|date| local_midnight(date).ok())?;
+    .and_then(|date| local_midnight(date).ok());
+  let (Some(service_start), Some(service_end)) = (service_start, service_end) else {
+    return Vec::new();
+  };
   if service_end <= service_start {
-    return None;
+    return Vec::new();
   }
+  if record.billing_mode != "monthly_recurring" {
+    return vec![(service_start, service_end)];
+  }
+
+  let mut cycles = Vec::new();
+  let mut cycle_start_date = service_start.date_naive();
+  let mut cycle_end_date = service_end.date_naive();
+
+  while let (Ok(cycle_start), Ok(cycle_end)) = (
+    local_midnight(cycle_start_date),
+    local_midnight(cycle_end_date),
+  ) {
+    if cycle_end > window.start && cycle_start < window.end {
+      cycles.push((cycle_start, cycle_end));
+    }
+    if cycle_start >= window.end {
+      break;
+    }
+    cycle_start_date = add_months(cycle_start_date, 1);
+    cycle_end_date = add_months(cycle_end_date, 1);
+    if cycle_end_date <= cycle_start_date {
+      break;
+    }
+  }
+
+  cycles
+}
+
+fn prorated_subscription_cost(
+  amount_usd: f64,
+  service_start: DateTime<Local>,
+  service_end: DateTime<Local>,
+  window: &Window,
+) -> f64 {
   let overlap_start = window.start.max(service_start);
   let overlap_end = window.end.min(service_end);
   if overlap_end <= overlap_start {
-    return None;
+    return 0.0;
   }
   let service_seconds = service_end
     .signed_duration_since(service_start)
@@ -1612,7 +1724,7 @@ fn subscription_record_cost_for_window(
     .signed_duration_since(overlap_start)
     .num_seconds()
     .max(0) as f64;
-  Some(record.amount_usd * (overlap_seconds / service_seconds))
+  amount_usd * (overlap_seconds / service_seconds)
 }
 
 fn selected_rate_limit_window<'a>(
@@ -1885,13 +1997,35 @@ impl SourceTurnAccumulator {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::database::{init_db, insert_live_rate_limit_snapshot};
+  use crate::database::{create_subscription_record, init_db, insert_live_rate_limit_snapshot};
+  use crate::models::SubscriptionRecordInput;
   use tempfile::tempdir;
 
   fn local_time(value: &str) -> DateTime<Local> {
     DateTime::parse_from_rfc3339(value)
       .expect("parse local test timestamp")
       .with_timezone(&Local)
+  }
+
+  fn subscription_record(
+    id: i64,
+    service_start: &str,
+    service_end: &str,
+    amount_usd: f64,
+    billing_mode: &str,
+  ) -> SubscriptionRecord {
+    SubscriptionRecord {
+      id,
+      paid_at: service_start.to_string(),
+      service_start: service_start.to_string(),
+      service_end: service_end.to_string(),
+      amount_usd,
+      billing_mode: billing_mode.to_string(),
+      plan_type: "plus".to_string(),
+      note: None,
+      created_at: String::new(),
+      updated_at: String::new(),
+    }
   }
 
   #[test]
@@ -2257,28 +2391,8 @@ mod tests {
       end: local_time("2026-05-01T00:00:00+08:00"),
     };
     let records = vec![
-      SubscriptionRecord {
-        id: 1,
-        paid_at: "2026-04-16".to_string(),
-        service_start: "2026-04-16".to_string(),
-        service_end: "2026-05-16".to_string(),
-        amount_usd: 20.0,
-        plan_type: "plus".to_string(),
-        note: None,
-        created_at: String::new(),
-        updated_at: String::new(),
-      },
-      SubscriptionRecord {
-        id: 2,
-        paid_at: "2026-04-01".to_string(),
-        service_start: "2026-04-01".to_string(),
-        service_end: "2026-05-01".to_string(),
-        amount_usd: 200.0,
-        plan_type: "pro".to_string(),
-        note: None,
-        created_at: String::new(),
-        updated_at: String::new(),
-      },
+      subscription_record(1, "2026-04-16", "2026-05-16", 20.0, "one_time"),
+      subscription_record(2, "2026-04-01", "2026-05-01", 200.0, "one_time"),
     ];
 
     let cost = subscription_cost_for_window(&window, &records);
@@ -2295,28 +2409,8 @@ mod tests {
       end: local_time("2026-05-01T00:00:00+08:00"),
     };
     let records = vec![
-      SubscriptionRecord {
-        id: 1,
-        paid_at: "2026-03-19".to_string(),
-        service_start: "2026-03-19".to_string(),
-        service_end: "2026-04-19".to_string(),
-        amount_usd: 19.99,
-        plan_type: "plus".to_string(),
-        note: None,
-        created_at: String::new(),
-        updated_at: String::new(),
-      },
-      SubscriptionRecord {
-        id: 2,
-        paid_at: "2026-04-25".to_string(),
-        service_start: "2026-04-25".to_string(),
-        service_end: "2026-05-25".to_string(),
-        amount_usd: 100.0,
-        plan_type: "pro_x5".to_string(),
-        note: None,
-        created_at: String::new(),
-        updated_at: String::new(),
-      },
+      subscription_record(1, "2026-03-19", "2026-04-19", 19.99, "one_time"),
+      subscription_record(2, "2026-04-25", "2026-05-25", 100.0, "one_time"),
     ];
 
     let prorated_cost = subscription_cost_for_window(&window, &records);
@@ -2324,6 +2418,182 @@ mod tests {
 
     assert!(prorated_cost < 119.99);
     assert!((total_cost - 119.99).abs() < 0.001);
+  }
+
+  #[test]
+  fn recurring_subscription_cost_expands_monthly_periods() {
+    let window = Window {
+      bucket: "month".to_string(),
+      anchor: "2026-05-01".to_string(),
+      start: local_time("2026-05-01T00:00:00+08:00"),
+      end: local_time("2026-06-01T00:00:00+08:00"),
+    };
+    let records = vec![subscription_record(
+      1,
+      "2026-04-01",
+      "2026-05-01",
+      31.0,
+      "monthly_recurring",
+    )];
+
+    let cost = subscription_cost_for_window(&window, &records);
+
+    assert!((cost - 31.0).abs() < 0.001);
+  }
+
+  #[test]
+  fn total_list_and_overview_use_same_subscription_denominator() {
+    let conn = Connection::open_in_memory().expect("open in-memory database");
+    init_db(&conn).expect("init db");
+    let mut sessions = HashMap::new();
+    sessions.insert(
+      "session-1".to_string(),
+      SessionRow {
+        session_id: "session-1".to_string(),
+        root_session_id: "session-1".to_string(),
+        parent_session_id: None,
+        title: "Total check".to_string(),
+        source_state: "active".to_string(),
+        source_path: None,
+        started_at: Some("2026-04-20T09:00:00+08:00".to_string()),
+        updated_at: Some("2026-04-20T09:30:00+08:00".to_string()),
+        agent_nickname: None,
+        agent_role: None,
+      },
+    );
+    let events = vec![EventRow {
+      session_id: "session-1".to_string(),
+      timestamp: "2026-04-20T09:15:00+08:00".to_string(),
+      model_id: "gpt-5.4".to_string(),
+      input_tokens: 10,
+      cached_input_tokens: 0,
+      output_tokens: 10,
+      reasoning_output_tokens: 0,
+      total_tokens: 20,
+      value_usd: 10.0,
+      fast_mode_auto: false,
+      fast_mode_effective: false,
+    }];
+    let profile = SubscriptionProfile::default();
+    let records = vec![subscription_record(
+      1,
+      "2026-04-01",
+      "2026-05-01",
+      100.0,
+      "one_time",
+    )];
+
+    let overview = build_overview(
+      &conn,
+      &sessions,
+      &events,
+      &profile,
+      &records,
+      &HashMap::new(),
+      Some("total".to_string()),
+      None,
+      None,
+      None,
+      None,
+      None,
+    )
+    .expect("build overview");
+    let conversations = build_conversation_list(
+      &conn,
+      &sessions,
+      &events,
+      &profile,
+      &records,
+      Some(ConversationFilters {
+        bucket: Some("total".to_string()),
+        ..ConversationFilters::default()
+      }),
+      None,
+    )
+    .expect("build conversations");
+
+    assert!((overview.stats.payoff_ratio - 0.1).abs() < 0.001);
+    assert!((conversations[0].subscription_share - overview.stats.payoff_ratio).abs() < 0.001);
+  }
+
+  #[test]
+  fn conversation_detail_uses_active_window_subscription_denominator() {
+    let directory = tempdir().expect("tempdir");
+    let db_path = directory.path().join("detail-window.sqlite");
+    let conn = Connection::open(&db_path).expect("open test database");
+    init_db(&conn).expect("init db");
+    conn
+      .execute("DELETE FROM subscription_records", [])
+      .expect("clear migrated record");
+    conn
+      .execute(
+        "
+        INSERT INTO sessions (
+          session_id, root_session_id, title, source_state, started_at, updated_at, created_at, imported_at
+        )
+        VALUES (?1, ?1, ?2, 'active', ?3, ?4, ?3, ?4)
+        ",
+        rusqlite::params![
+          "session-1",
+          "Detail window check",
+          "2026-04-20T09:00:00+08:00",
+          "2026-04-20T09:30:00+08:00",
+        ],
+      )
+      .expect("insert session");
+    conn
+      .execute(
+        "
+        INSERT INTO usage_events (
+          session_id, timestamp, model_id, input_tokens, cached_input_tokens, output_tokens,
+          reasoning_output_tokens, total_tokens, value_usd, fast_mode_auto, fast_mode_effective
+        )
+        VALUES (?1, ?2, ?3, 10, 0, 10, 0, 20, 10.0, 0, 0)
+        ",
+        rusqlite::params!["session-1", "2026-04-20T09:15:00+08:00", "gpt-5.4"],
+      )
+      .expect("insert usage event");
+    create_subscription_record(
+      &conn,
+      &SubscriptionRecordInput {
+        paid_at: "2026-04-01".to_string(),
+        service_start: "2026-04-01".to_string(),
+        service_end: "2026-05-01".to_string(),
+        amount_usd: 100.0,
+        billing_mode: "one_time".to_string(),
+        plan_type: "plus".to_string(),
+        note: None,
+      },
+    )
+    .expect("create current subscription record");
+    create_subscription_record(
+      &conn,
+      &SubscriptionRecordInput {
+        paid_at: "2026-05-01".to_string(),
+        service_start: "2026-05-01".to_string(),
+        service_end: "2026-06-01".to_string(),
+        amount_usd: 900.0,
+        billing_mode: "one_time".to_string(),
+        plan_type: "pro_x10".to_string(),
+        note: None,
+      },
+    )
+    .expect("create future subscription record");
+    drop(conn);
+
+    let detail = get_conversation_detail(
+      &db_path,
+      "session-1",
+      Some(ConversationFilters {
+        bucket: Some("month".to_string()),
+        anchor: Some("2026-04-20".to_string()),
+        ..ConversationFilters::default()
+      }),
+      None,
+    )
+    .expect("load detail");
+
+    assert!((detail.subscription_share - 0.1).abs() < 0.001);
   }
 
   #[test]

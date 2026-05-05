@@ -44,11 +44,31 @@ pub fn open_connection(db_path: &Path) -> rusqlite::Result<Connection> {
 }
 
 pub fn init_db(conn: &Connection) -> rusqlite::Result<()> {
+    let had_subscription_records_table = table_exists(conn, "subscription_records")?;
     conn.execute_batch(include_str!("../sql/schema.sql"))?;
+    subscriptions::ensure_subscription_records_schema(conn)?;
     sync_settings::ensure_sync_settings_schema(conn)?;
     ensure_singletons(conn)?;
+    subscriptions::migrate_subscription_profile_to_subscription_record(
+        conn,
+        had_subscription_records_table,
+    )?;
     conn.execute_batch(include_str!("../sql/indexes.sql"))?;
     Ok(())
+}
+
+fn table_exists(conn: &Connection, table_name: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "
+        SELECT EXISTS(
+          SELECT 1
+          FROM sqlite_master
+          WHERE type = 'table' AND name = ?1
+        )
+        ",
+        params![table_name],
+        |row| row.get::<_, bool>(0),
+    )
 }
 
 fn ensure_singletons(conn: &Connection) -> rusqlite::Result<()> {

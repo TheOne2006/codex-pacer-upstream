@@ -12,6 +12,7 @@ export type OverviewBucket =
 export type ShareMode = 'value' | 'tokens'
 export type ShareDimension = 'model' | 'composition'
 export type AppView = 'overview' | 'conversations'
+export type SubscriptionBillingMode = 'one_time' | 'monthly_recurring'
 export type MenuBarPopupModuleId =
   | 'api_value'
   | 'token_count'
@@ -61,6 +62,7 @@ export interface SubscriptionRecord {
   serviceStart: string
   serviceEnd: string
   amountUsd: number
+  billingMode: SubscriptionBillingMode
   planType: string
   note: string | null
   createdAt: string
@@ -72,6 +74,7 @@ export interface SubscriptionRecordInput {
   serviceStart: string
   serviceEnd: string
   amountUsd: number
+  billingMode: SubscriptionBillingMode
   planType: string
   note: string | null
 }

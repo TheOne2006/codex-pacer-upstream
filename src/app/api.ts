@@ -13,6 +13,7 @@ import type {
   SubscriptionRecordInput,
   SyncSettings,
 } from './types'
+import { todayLocalInputValue } from './subscriptionDates'
 
 function bucketUsesAnchor(bucket: OverviewBucket) {
   return !['five_hour', 'seven_day', 'custom', 'total'].includes(bucket)
@@ -77,19 +78,15 @@ function createMockLiveRateLimits(): LiveRateLimitSnapshot {
 }
 
 function localDateStartIso(value: string | null | undefined) {
-  const fallback = todayInputValue()
+  const fallback = todayLocalInputValue()
   return new Date(`${value ?? fallback}T00:00:00`).toISOString()
 }
 
 function localDateExclusiveEndIso(value: string | null | undefined) {
-  const fallback = todayInputValue()
+  const fallback = todayLocalInputValue()
   const date = new Date(`${value ?? fallback}T00:00:00`)
   date.setDate(date.getDate() + 1)
   return date.toISOString()
-}
-
-function todayInputValue() {
-  return new Date().toISOString().slice(0, 10)
 }
 
 function createMockOverview(
@@ -282,8 +279,9 @@ export async function getLiveRateLimits(): Promise<LiveRateLimitSnapshot> {
 
 export async function getConversationDetail(
   rootSessionId: string,
+  filters?: ConversationFilters | null,
 ): Promise<import('./types').ConversationDetail> {
-  return invokeOrMock('getConversationDetail', { rootSessionId }, () => {
+  return invokeOrMock('getConversationDetail', { rootSessionId, filters: filters ?? null }, () => {
     throw new Error(`Conversation ${rootSessionId} is unavailable in browser preview mode.`)
   })
 }

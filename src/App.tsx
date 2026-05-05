@@ -42,6 +42,7 @@ import type {
   AppView,
   CompositionShare,
   ConversationDetail,
+  ConversationFilters,
   ConversationListItem,
   ConversationSessionSummary,
   ConversationTurnPoint,
@@ -177,9 +178,14 @@ function App() {
       startTransition(() => {
         const nextDetailCache = new Map<string, ConversationDetail>()
         for (const conversation of snapshot.conversations) {
-          const cachedDetail = detailCacheRef.current.get(conversation.rootSessionId)
+          const cachedDetail = detailCacheRef.current.get(
+            buildDetailCacheKey(conversation.rootSessionId, lastRequestedQueryKeyRef.current),
+          )
           if (cachedDetail && cachedDetail.updatedAt === conversation.updatedAt) {
-            nextDetailCache.set(conversation.rootSessionId, cachedDetail)
+            nextDetailCache.set(
+              buildDetailCacheKey(conversation.rootSessionId, lastRequestedQueryKeyRef.current),
+              cachedDetail,
+            )
           }
         }
 
@@ -276,37 +282,49 @@ function App() {
     void emitTo(MENU_BAR_POPUP_WINDOW_LABEL, MENU_BAR_POPUP_LANGUAGE_EVENT, { language }).catch(() => {})
   }, [language])
 
-  const loadDetail = useCallback(async (rootSessionId: string | null) => {
-    const requestId = latestDetailRequestIdRef.current + 1
-    latestDetailRequestIdRef.current = requestId
-    if (!rootSessionId) {
+  const loadDetail = useCallback(
+    async (rootSessionId: string | null) => {
+      const requestId = latestDetailRequestIdRef.current + 1
+      latestDetailRequestIdRef.current = requestId
+      if (!rootSessionId) {
+        setDetail(null)
+        return
+      }
+
+      const filters = buildConversationFilters(
+        bucket,
+        anchor,
+        customStart,
+        customEnd,
+        deferredSearch || null,
+        liveWindowOffset,
+      )
+      const cacheKey = buildDetailCacheKey(rootSessionId, currentQueryKey)
+      const cachedDetail = detailCacheRef.current.get(cacheKey)
+      if (cachedDetail) {
+        setDetail(cachedDetail)
+        return
+      }
+
       setDetail(null)
-      return
-    }
-
-    const cachedDetail = detailCacheRef.current.get(rootSessionId)
-    if (cachedDetail) {
-      setDetail(cachedDetail)
-      return
-    }
-
-    setDetail(null)
-    try {
-      const nextDetail = await getConversationDetail(rootSessionId)
-      if (requestId !== latestDetailRequestIdRef.current) {
-        return
+      try {
+        const nextDetail = await getConversationDetail(rootSessionId, filters)
+        if (requestId !== latestDetailRequestIdRef.current) {
+          return
+        }
+        detailCacheRef.current.set(cacheKey, nextDetail)
+        startTransition(() => {
+          setDetail(nextDetail)
+        })
+      } catch (error) {
+        if (requestId !== latestDetailRequestIdRef.current) {
+          return
+        }
+        setStatusMessage(String(error))
       }
-      detailCacheRef.current.set(rootSessionId, nextDetail)
-      startTransition(() => {
-        setDetail(nextDetail)
-      })
-    } catch (error) {
-      if (requestId !== latestDetailRequestIdRef.current) {
-        return
-      }
-      setStatusMessage(String(error))
-    }
-  }, [])
+    },
+    [anchor, bucket, currentQueryKey, customEnd, customStart, deferredSearch, liveWindowOffset],
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -413,6 +431,9 @@ function App() {
     const nextRecords = await listSubscriptionRecords()
     setSubscriptionRecords(nextRecords)
     await loadShell(false)
+    if (isTauri()) {
+      await emitTo(MENU_BAR_POPUP_WINDOW_LABEL, MENU_BAR_POPUP_REFRESH_EVENT, {}).catch(() => {})
+    }
     setStatusMessage(t.status.subscriptionRecordSaved)
   }
 
@@ -421,6 +442,9 @@ function App() {
     const nextRecords = await listSubscriptionRecords()
     setSubscriptionRecords(nextRecords)
     await loadShell(false)
+    if (isTauri()) {
+      await emitTo(MENU_BAR_POPUP_WINDOW_LABEL, MENU_BAR_POPUP_REFRESH_EVENT, {}).catch(() => {})
+    }
     setStatusMessage(t.status.subscriptionRecordDeleted)
   }
 
@@ -990,6 +1014,24 @@ function bucketUsesAnchor(bucket: OverviewBucket) {
   return !['five_hour', 'seven_day', 'custom', 'total'].includes(bucket)
 }
 
+function buildConversationFilters(
+  bucket: OverviewBucket,
+  anchor: string,
+  customStart: string,
+  customEnd: string,
+  search: string | null,
+  liveWindowOffset: number,
+): ConversationFilters {
+  return {
+    bucket,
+    anchor: bucketUsesAnchor(bucket) ? anchor : null,
+    customStart: bucket === 'custom' ? customStart : null,
+    customEnd: bucket === 'custom' ? customEnd : null,
+    search,
+    liveWindowOffset: bucket === 'five_hour' || bucket === 'seven_day' ? liveWindowOffset : 0,
+  }
+}
+
 function buildQueryKey(
   bucket: OverviewBucket,
   anchor: string | null,
@@ -999,6 +1041,10 @@ function buildQueryKey(
   liveWindowOffset: number,
 ) {
   return [bucket, anchor ?? '', customStart ?? '', customEnd ?? '', search ?? '', String(liveWindowOffset)].join('::')
+}
+
+function buildDetailCacheKey(rootSessionId: string, queryKey: string | null) {
+  return `${queryKey ?? 'unloaded'}::${rootSessionId}`
 }
 
 function formatCustomRangeLabel(windowStart: string | null, windowEnd: string | null, language: 'zh-CN' | 'en') {

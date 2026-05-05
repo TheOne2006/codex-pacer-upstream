@@ -243,6 +243,9 @@ export type TranslationSet = {
         planPlus: string
         planPro5: string
         planPro10: string
+        billingMode: string
+        billingModeOneTime: string
+        billingModeMonthlyRecurring: string
         amountUsd: string
         serviceStart: string
         serviceEnd: string
@@ -513,6 +516,9 @@ const translations: Record<AppLanguage, TranslationSet> = {
           planPlus: 'ChatGPT Plus',
           planPro5: 'ChatGPT Pro 5x',
           planPro10: 'ChatGPT Pro 10x',
+          billingMode: '计费方式',
+          billingModeOneTime: '单次',
+          billingModeMonthlyRecurring: '每月重复',
           amountUsd: '金额（USD）',
           serviceStart: '服务开始',
           serviceEnd: '服务结束',
@@ -776,6 +782,9 @@ const translations: Record<AppLanguage, TranslationSet> = {
           planPlus: 'ChatGPT Plus',
           planPro5: 'ChatGPT Pro 5x',
           planPro10: 'ChatGPT Pro 10x',
+          billingMode: 'Billing mode',
+          billingModeOneTime: 'One-time',
+          billingModeMonthlyRecurring: 'Monthly recurring',
           amountUsd: 'Amount (USD)',
           serviceStart: 'Service start',
           serviceEnd: 'Service end',

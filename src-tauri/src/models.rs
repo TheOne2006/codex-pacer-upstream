@@ -162,6 +162,7 @@ pub struct SubscriptionRecord {
   pub service_start: String,
   pub service_end: String,
   pub amount_usd: f64,
+  pub billing_mode: String,
   pub plan_type: String,
   pub note: Option<String>,
   pub created_at: String,
@@ -175,8 +176,14 @@ pub struct SubscriptionRecordInput {
   pub service_start: String,
   pub service_end: String,
   pub amount_usd: f64,
+  #[serde(default = "default_subscription_billing_mode")]
+  pub billing_mode: String,
   pub plan_type: String,
   pub note: Option<String>,
+}
+
+fn default_subscription_billing_mode() -> String {
+  "one_time".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -3,11 +3,13 @@ import { ChevronDown, ChevronUp } from 'lucide-react'
 
 import { formatPercent, formatRemainingDuration, formatUsd, todayInputValue } from '../app/format'
 import { SUPPORTED_LANGUAGES, type AppLanguage } from '../app/i18n'
+import { addOneCalendarMonth } from '../app/subscriptionDates'
 import { useI18n } from '../app/useI18n'
 import type {
   LiveRateLimitSnapshot,
   MenuBarPopupModuleId,
   OverviewBucket,
+  SubscriptionBillingMode,
   SubscriptionProfile,
   SubscriptionRecord,
   SubscriptionRecordInput,
@@ -57,22 +59,13 @@ function SwitchField({ label, checked, disabled = false, onChange }: SwitchField
   )
 }
 
-function addOneMonth(value: string) {
-  const date = new Date(`${value}T00:00:00`)
-  if (Number.isNaN(date.getTime())) return value
-  date.setMonth(date.getMonth() + 1)
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
-
 type SubscriptionPlanOption = 'plus' | 'pro_x5' | 'pro_x10'
 
 interface SubscriptionRecordFormState {
   serviceStart: string
   serviceEnd: string
   amountUsd: number
+  billingMode: SubscriptionBillingMode
   planType: SubscriptionPlanOption
   accountEmail: string
 }
@@ -99,11 +92,12 @@ function createDefaultRecordForm(profile: SubscriptionProfile | null): Subscript
   const planType = normalizePlanOption(profile?.planType)
   return {
     serviceStart,
-    serviceEnd: addOneMonth(serviceStart),
+    serviceEnd: addOneCalendarMonth(serviceStart),
     amountUsd:
       profile?.monthlyPrice && profile.monthlyPrice > 0
         ? profile.monthlyPrice
         : defaultAmountForPlan(planType),
+    billingMode: 'monthly_recurring',
     planType,
     accountEmail: '',
   }
@@ -115,6 +109,7 @@ function recordToForm(record: SubscriptionRecord): SubscriptionRecordFormState {
     serviceStart: record.serviceStart,
     serviceEnd: record.serviceEnd,
     amountUsd: record.amountUsd,
+    billingMode: record.billingMode ?? 'one_time',
     planType,
     accountEmail: record.note ?? '',
   }
@@ -250,6 +245,16 @@ export function SettingsPanel({
       amountUsd: SUBSCRIPTION_PLAN_AMOUNTS.pro_x10,
     },
   ]
+  const billingModeOptions: Array<{ value: SubscriptionBillingMode; label: string }> = [
+    {
+      value: 'monthly_recurring',
+      label: t.settings.sections.subscription.billingModeMonthlyRecurring,
+    },
+    {
+      value: 'one_time',
+      label: t.settings.sections.subscription.billingModeOneTime,
+    },
+  ]
 
   function togglePopupModule(moduleId: MenuBarPopupModuleId, enabled: boolean) {
     setDraftSync((current) => {
@@ -308,7 +313,8 @@ export function SettingsPanel({
     setRecordForm((current) => ({
       ...current,
       serviceStart,
-      serviceEnd: current.serviceEnd <= serviceStart ? addOneMonth(serviceStart) : current.serviceEnd,
+      serviceEnd:
+        current.serviceEnd <= serviceStart ? addOneCalendarMonth(serviceStart) : current.serviceEnd,
     }))
   }
 
@@ -326,7 +332,8 @@ export function SettingsPanel({
           paidAt: recordForm.serviceStart,
           serviceStart: recordForm.serviceStart,
           serviceEnd: recordForm.serviceEnd,
-          amountUsd: Math.max(0, Number(recordForm.amountUsd || 0)),
+          amountUsd: Number(recordForm.amountUsd || 0),
+          billingMode: recordForm.billingMode,
           planType: recordForm.planType,
           note: accountEmail || null,
         },
@@ -932,6 +939,11 @@ export function SettingsPanel({
                         <span className="subscription-record-plan-badge">
                           {formatPlanLabel(record.planType, t.settings.sections.subscription)}
                         </span>
+                        <span className="subscription-record-mode-badge">
+                          {record.billingMode === 'monthly_recurring'
+                            ? t.settings.sections.subscription.billingModeMonthlyRecurring
+                            : t.settings.sections.subscription.billingModeOneTime}
+                        </span>
                         <strong className="subscription-record-amount">
                           {formatUsd(record.amountUsd, language)}
                         </strong>
@@ -1000,15 +1012,39 @@ export function SettingsPanel({
                     </select>
                   </label>
 
+                  <div className="field field-span-2">
+                    <span>{t.settings.sections.subscription.billingMode}</span>
+                    <div
+                      aria-label={t.settings.sections.subscription.billingMode}
+                      className="segmented-control"
+                      role="radiogroup"
+                    >
+                      {billingModeOptions.map((option) => (
+                        <button
+                          aria-checked={recordForm.billingMode === option.value}
+                          className={`segmented-control-button${
+                            recordForm.billingMode === option.value ? ' is-active' : ''
+                          }`}
+                          key={option.value}
+                          onClick={() => updateRecordForm({ billingMode: option.value })}
+                          role="radio"
+                          type="button"
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
                   <label className="field">
                     <span>{t.settings.sections.subscription.amountUsd}</span>
                     <input
-                      min={0}
+                      min={0.01}
                       step={0.01}
                       type="number"
                       value={recordForm.amountUsd}
                       onChange={(event) =>
-                        updateRecordForm({ amountUsd: Math.max(0, Number(event.target.value || 0)) })
+                        updateRecordForm({ amountUsd: Number(event.target.value || 0) })
                       }
                     />
                   </label>
@@ -1056,6 +1092,8 @@ export function SettingsPanel({
                       className="accent-button"
                       disabled={
                         savingRecord ||
+                        !Number.isFinite(recordForm.amountUsd) ||
+                        recordForm.amountUsd <= 0 ||
                         !recordForm.serviceStart ||
                         !recordForm.serviceEnd ||
                         recordForm.serviceEnd <= recordForm.serviceStart

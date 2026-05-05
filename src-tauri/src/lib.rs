@@ -219,8 +219,14 @@ async fn loadDashboard(
 fn getConversationDetail(
   state: State<'_, AppState>,
   root_session_id: String,
+  filters: Option<ConversationFilters>,
 ) -> Result<ConversationDetail, String> {
-  get_conversation_detail(&state.db_path, &root_session_id)
+  let live_rate_limits = maybe_live_rate_limits_for_bucket(
+    state.inner(),
+    filters.as_ref().and_then(|value| value.bucket.as_deref()),
+    filters.as_ref().and_then(|value| value.live_window_offset),
+  )?;
+  get_conversation_detail(&state.db_path, &root_session_id, filters, live_rate_limits)
 }
 
 #[allow(non_snake_case)]
