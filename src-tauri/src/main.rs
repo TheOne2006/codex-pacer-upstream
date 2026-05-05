@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-  codex_counter_lib::run();
+    codex_counter_lib::run();
 }

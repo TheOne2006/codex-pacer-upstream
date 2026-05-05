@@ -1,10 +1,10 @@
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection};
 
 use crate::models::SyncSettings;
 
 use super::{bool_to_i64, i64_to_bool, now_utc_string};
 
-pub fn default_menu_bar_popup_modules() -> Vec<String> {
+pub(super) fn default_menu_bar_popup_modules() -> Vec<String> {
     vec!["api_value".to_string(), "scan_freshness".to_string()]
 }
 
@@ -46,290 +46,11 @@ fn serialize_menu_bar_popup_modules(modules: &[String]) -> String {
     serde_json::to_string(modules).unwrap_or_else(|_| default_menu_bar_popup_modules_json())
 }
 
-pub(super) fn ensure_sync_settings_schema(conn: &Connection) -> rusqlite::Result<()> {
-    let mut stmt = conn.prepare("PRAGMA table_info(sync_settings)")?;
-    let column_names = stmt
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-
-    if !column_names
-        .iter()
-        .any(|name| name == "sync_settings_schema_version")
-    {
-        conn.execute(
-            "
-      ALTER TABLE sync_settings
-      ADD COLUMN sync_settings_schema_version INTEGER NOT NULL DEFAULT 1
-      ",
-            [],
-        )?;
-    }
-
-    if !column_names
-        .iter()
-        .any(|name| name == "show_menu_bar_daily_api_value")
-    {
-        conn.execute(
-            "
-      ALTER TABLE sync_settings
-      ADD COLUMN show_menu_bar_daily_api_value INTEGER NOT NULL DEFAULT 1
-      ",
-            [],
-        )?;
-    }
-
-    if !column_names.iter().any(|name| name == "show_menu_bar_logo") {
-        conn.execute(
-            "
-      ALTER TABLE sync_settings
-      ADD COLUMN show_menu_bar_logo INTEGER NOT NULL DEFAULT 1
-      ",
-            [],
-        )?;
-        conn.execute(
-            "
-      UPDATE sync_settings
-      SET show_menu_bar_logo = show_menu_bar_daily_api_value
-      WHERE singleton_id = 1
-      ",
-            [],
-        )?;
-    }
-
-    if !column_names
-        .iter()
-        .any(|name| name == "show_menu_bar_live_quota_percent")
-    {
-        conn.execute(
-            "
-      ALTER TABLE sync_settings
-      ADD COLUMN show_menu_bar_live_quota_percent INTEGER NOT NULL DEFAULT 0
-      ",
-            [],
-        )?;
-    }
-
-    if !column_names
-        .iter()
-        .any(|name| name == "menu_bar_live_quota_metric")
-    {
-        conn.execute(
-            "
-      ALTER TABLE sync_settings
-      ADD COLUMN menu_bar_live_quota_metric TEXT NOT NULL DEFAULT 'remaining_percent'
-      ",
-            [],
-        )?;
-    }
-
-    if !column_names
-        .iter()
-        .any(|name| name == "menu_bar_live_quota_bucket")
-    {
-        conn.execute(
-            "
-      ALTER TABLE sync_settings
-      ADD COLUMN menu_bar_live_quota_bucket TEXT NOT NULL DEFAULT 'five_hour'
-      ",
-            [],
-        )?;
-    }
-
-    if !column_names.iter().any(|name| name == "menu_bar_bucket") {
-        conn.execute(
-            "
-      ALTER TABLE sync_settings
-      ADD COLUMN menu_bar_bucket TEXT NOT NULL DEFAULT 'day'
-      ",
-            [],
-        )?;
-    }
-
-    if !column_names
-        .iter()
-        .any(|name| name == "live_quota_refresh_interval_seconds")
-    {
-        conn.execute(
-            "
-      ALTER TABLE sync_settings
-      ADD COLUMN live_quota_refresh_interval_seconds INTEGER NOT NULL DEFAULT 300
-      ",
-            [],
-        )?;
-    }
-
-    if !column_names
-        .iter()
-        .any(|name| name == "default_fast_mode_for_new_gpt54_sessions")
-    {
-        conn.execute(
-            "
-      ALTER TABLE sync_settings
-      ADD COLUMN default_fast_mode_for_new_gpt54_sessions INTEGER NOT NULL DEFAULT 0
-      ",
-            [],
-        )?;
-    }
-
-    if !column_names
-        .iter()
-        .any(|name| name == "hide_dock_icon_when_menu_bar_visible")
-    {
-        conn.execute(
-            "
-      ALTER TABLE sync_settings
-      ADD COLUMN hide_dock_icon_when_menu_bar_visible INTEGER NOT NULL DEFAULT 0
-      ",
-            [],
-        )?;
-    }
-
-    if !column_names
-        .iter()
-        .any(|name| name == "menu_bar_speed_show_emoji")
-    {
-        conn.execute(
-      "ALTER TABLE sync_settings ADD COLUMN menu_bar_speed_show_emoji INTEGER NOT NULL DEFAULT 1",
-      [],
-    )?;
-    }
-
-    if !column_names
-        .iter()
-        .any(|name| name == "menu_bar_speed_fast_threshold_percent")
-    {
-        conn.execute(
-      "ALTER TABLE sync_settings ADD COLUMN menu_bar_speed_fast_threshold_percent INTEGER NOT NULL DEFAULT 85",
-      [],
-    )?;
-    }
-
-    if !column_names
-        .iter()
-        .any(|name| name == "menu_bar_speed_slow_threshold_percent")
-    {
-        conn.execute(
-      "ALTER TABLE sync_settings ADD COLUMN menu_bar_speed_slow_threshold_percent INTEGER NOT NULL DEFAULT 115",
-      [],
-    )?;
-    }
-
-    if !column_names
-        .iter()
-        .any(|name| name == "menu_bar_speed_healthy_emoji")
-    {
-        conn.execute(
-      "ALTER TABLE sync_settings ADD COLUMN menu_bar_speed_healthy_emoji TEXT NOT NULL DEFAULT '🟢'",
-      [],
-    )?;
-    }
-
-    if !column_names
-        .iter()
-        .any(|name| name == "menu_bar_speed_fast_emoji")
-    {
-        conn.execute(
-      "ALTER TABLE sync_settings ADD COLUMN menu_bar_speed_fast_emoji TEXT NOT NULL DEFAULT '🔥'",
-      [],
-    )?;
-    }
-
-    if !column_names
-        .iter()
-        .any(|name| name == "menu_bar_speed_slow_emoji")
-    {
-        conn.execute(
-      "ALTER TABLE sync_settings ADD COLUMN menu_bar_speed_slow_emoji TEXT NOT NULL DEFAULT '🐢'",
-      [],
-    )?;
-    }
-
-    if !column_names
-        .iter()
-        .any(|name| name == "menu_bar_popup_enabled")
-    {
-        conn.execute(
-      "ALTER TABLE sync_settings ADD COLUMN menu_bar_popup_enabled INTEGER NOT NULL DEFAULT 1",
-      [],
-    )?;
-    }
-
-    if !column_names
-        .iter()
-        .any(|name| name == "menu_bar_popup_modules")
-    {
-        conn.execute(
-      "ALTER TABLE sync_settings ADD COLUMN menu_bar_popup_modules TEXT NOT NULL DEFAULT '[\"api_value\",\"scan_freshness\"]'",
-      [],
-    )?;
-    }
-
-    if !column_names
-        .iter()
-        .any(|name| name == "menu_bar_popup_show_reset_timeline")
-    {
-        conn.execute(
-      "ALTER TABLE sync_settings ADD COLUMN menu_bar_popup_show_reset_timeline INTEGER NOT NULL DEFAULT 1",
-      [],
-    )?;
-    }
-
-    if !column_names
-        .iter()
-        .any(|name| name == "menu_bar_popup_show_actions")
-    {
-        conn.execute(
-      "ALTER TABLE sync_settings ADD COLUMN menu_bar_popup_show_actions INTEGER NOT NULL DEFAULT 1",
-      [],
-    )?;
-    }
-
-    migrate_sync_settings_defaults_to_minutes(conn)?;
-
-    Ok(())
-}
-
-fn migrate_sync_settings_defaults_to_minutes(conn: &Connection) -> rusqlite::Result<()> {
-    let schema_version = conn
-        .query_row(
-            "SELECT sync_settings_schema_version FROM sync_settings WHERE singleton_id = 1",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()?
-        .unwrap_or(2);
-
-    if schema_version >= 2 {
-        return Ok(());
-    }
-
-    conn.execute(
-        "
-    UPDATE sync_settings
-    SET
-      live_quota_refresh_interval_seconds = CASE
-        WHEN live_quota_refresh_interval_seconds = 60 THEN 300
-        ELSE live_quota_refresh_interval_seconds
-      END,
-      default_fast_mode_for_new_gpt54_sessions = CASE
-        WHEN default_fast_mode_for_new_gpt54_sessions = 1 THEN 0
-        ELSE default_fast_mode_for_new_gpt54_sessions
-      END,
-      sync_settings_schema_version = 2
-    WHERE singleton_id = 1
-    ",
-        [],
-    )?;
-
-    Ok(())
-}
-
 pub fn get_sync_settings(conn: &Connection) -> rusqlite::Result<SyncSettings> {
     conn.query_row(
         "
     SELECT codex_home, auto_scan_enabled, auto_scan_interval_minutes,
-           live_quota_refresh_interval_seconds,
-           hide_dock_icon_when_menu_bar_visible,
+           live_quota_refresh_interval_seconds, hide_dock_icon_when_menu_bar_visible,
            show_menu_bar_logo, show_menu_bar_daily_api_value,
            show_menu_bar_live_quota_percent, menu_bar_live_quota_metric,
            menu_bar_live_quota_bucket, menu_bar_bucket,
@@ -380,11 +101,10 @@ pub fn save_sync_settings(
 ) -> rusqlite::Result<SyncSettings> {
     let updated_at = now_utc_string();
     conn.execute(
-    "
+        "
     INSERT INTO sync_settings (
       singleton_id, codex_home, auto_scan_enabled, auto_scan_interval_minutes,
-      live_quota_refresh_interval_seconds,
-      hide_dock_icon_when_menu_bar_visible,
+      live_quota_refresh_interval_seconds, hide_dock_icon_when_menu_bar_visible,
       show_menu_bar_logo,
       show_menu_bar_daily_api_value,
       show_menu_bar_live_quota_percent, menu_bar_live_quota_metric,
@@ -423,32 +143,32 @@ pub fn save_sync_settings(
       last_scan_completed_at = excluded.last_scan_completed_at,
       updated_at = excluded.updated_at
     ",
-    params![
-      settings.codex_home,
-      bool_to_i64(settings.auto_scan_enabled),
-      settings.auto_scan_interval_minutes.max(1),
-      settings.live_quota_refresh_interval_seconds.clamp(60, 3600),
-      bool_to_i64(settings.hide_dock_icon_when_menu_bar_visible),
-      bool_to_i64(settings.show_menu_bar_logo),
-      bool_to_i64(settings.show_menu_bar_daily_api_value),
-      bool_to_i64(settings.show_menu_bar_live_quota_percent),
-      settings.menu_bar_live_quota_metric,
-      settings.menu_bar_live_quota_bucket,
-      settings.menu_bar_bucket,
-      bool_to_i64(settings.menu_bar_speed_show_emoji),
-      settings.menu_bar_speed_fast_threshold_percent.clamp(0, 1000),
-      settings.menu_bar_speed_slow_threshold_percent.clamp(0, 1000),
-      settings.menu_bar_speed_healthy_emoji,
-      settings.menu_bar_speed_fast_emoji,
-      settings.menu_bar_speed_slow_emoji,
-      bool_to_i64(settings.menu_bar_popup_enabled),
-      serialize_menu_bar_popup_modules(&settings.menu_bar_popup_modules),
-      bool_to_i64(settings.menu_bar_popup_show_reset_timeline),
-      bool_to_i64(settings.menu_bar_popup_show_actions),
-      settings.last_scan_started_at,
-      settings.last_scan_completed_at,
-      updated_at,
-    ],
+        params![
+            settings.codex_home,
+            bool_to_i64(settings.auto_scan_enabled),
+            settings.auto_scan_interval_minutes.max(1),
+            settings.live_quota_refresh_interval_seconds.clamp(60, 3600),
+            bool_to_i64(settings.hide_dock_icon_when_menu_bar_visible),
+            bool_to_i64(settings.show_menu_bar_logo),
+            bool_to_i64(settings.show_menu_bar_daily_api_value),
+            bool_to_i64(settings.show_menu_bar_live_quota_percent),
+            settings.menu_bar_live_quota_metric,
+            settings.menu_bar_live_quota_bucket,
+            settings.menu_bar_bucket,
+            bool_to_i64(settings.menu_bar_speed_show_emoji),
+            settings.menu_bar_speed_fast_threshold_percent.clamp(0, 1000),
+            settings.menu_bar_speed_slow_threshold_percent.clamp(0, 1000),
+            settings.menu_bar_speed_healthy_emoji,
+            settings.menu_bar_speed_fast_emoji,
+            settings.menu_bar_speed_slow_emoji,
+            bool_to_i64(settings.menu_bar_popup_enabled),
+            serialize_menu_bar_popup_modules(&settings.menu_bar_popup_modules),
+            bool_to_i64(settings.menu_bar_popup_show_reset_timeline),
+            bool_to_i64(settings.menu_bar_popup_show_actions),
+            settings.last_scan_started_at,
+            settings.last_scan_completed_at,
+            updated_at,
+        ],
     )?;
     get_sync_settings(conn)
 }
@@ -475,4 +195,29 @@ pub fn set_last_scan_completed(conn: &Connection, timestamp: &str) -> rusqlite::
         params![timestamp],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::init_db;
+
+    #[test]
+    fn save_sync_settings_round_trips_dock_visibility_preference() {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        init_db(&conn).expect("init database");
+
+        save_sync_settings(
+            &conn,
+            &SyncSettings {
+                hide_dock_icon_when_menu_bar_visible: true,
+                ..SyncSettings::default()
+            },
+        )
+        .expect("save settings");
+
+        let settings = get_sync_settings(&conn).expect("load settings");
+
+        assert!(settings.hide_dock_icon_when_menu_bar_visible);
+    }
 }

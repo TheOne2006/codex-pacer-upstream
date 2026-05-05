@@ -11,19 +11,19 @@ interface TrendChartProps {
 
 export function TrendChart({ data }: TrendChartProps) {
   const { language, t } = useI18n()
+  const hasRenderableData = data.some((point) => point.apiValueUsd > 0 || point.totalTokens > 0)
 
   return (
     <div className="chart-shell chart-shell--primary">
-      <div className="chart-heading">
+      <div className="chart-heading chart-heading--compact">
         <div>
           <p className="eyebrow">{t.charts.trendEyebrow}</p>
-          <h3>{t.charts.valueAndTokens}</h3>
         </div>
-        <p className="chart-note">{t.charts.valueVsTokens}</p>
       </div>
       <ResponsiveChart>
-        {({ width, height }) => (
-          <AreaChart data={data} height={height} margin={{ top: 12, right: 8, left: 0, bottom: 0 }} width={width}>
+        {({ width, height }) =>
+          hasRenderableData ? (
+            <AreaChart data={data} height={height} margin={{ top: 12, right: 8, left: 0, bottom: 0 }} width={width}>
             <defs>
               <linearGradient id="valueGradient" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.9} />
@@ -92,9 +92,24 @@ export function TrendChart({ data }: TrendChartProps) {
               dot={false}
               activeDot={{ r: 4, fill: '#dceaff' }}
             />
-          </AreaChart>
-        )}
+            </AreaChart>
+          ) : (
+            <div className="chart-empty-state">{t.charts.noTrendData}</div>
+          )
+        }
       </ResponsiveChart>
+      {hasRenderableData ? (
+        <div className="chart-legend" aria-label={t.charts.valueVsTokens}>
+          <span className="chart-legend-item chart-legend-item--value">
+            <i aria-hidden="true" />
+            {t.charts.apiValue}
+          </span>
+          <span className="chart-legend-item chart-legend-item--tokens">
+            <i aria-hidden="true" />
+            {t.charts.tokens}
+          </span>
+        </div>
+      ) : null}
     </div>
   )
 }

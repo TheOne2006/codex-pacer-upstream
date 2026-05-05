@@ -8,9 +8,9 @@ CREATE INDEX IF NOT EXISTS idx_import_state_session_id ON import_state(session_i
 CREATE INDEX IF NOT EXISTS idx_import_state_source_id ON import_state(source_id);
 CREATE INDEX IF NOT EXISTS idx_rate_limit_samples_bucket_window
   ON rate_limit_samples(bucket, window_start, resets_at, sample_timestamp);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_rate_limit_samples_dedupe
-  ON rate_limit_samples(
-    source_id, bucket, sample_timestamp, source_kind, source_session_id, limit_id, window_start, resets_at
-  );
 CREATE INDEX IF NOT EXISTS idx_subscription_records_service
   ON subscription_records(service_start, service_end);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_rate_limit_samples_dedupe
+  ON rate_limit_samples(
+    bucket, sample_timestamp, source_kind, source_session_id, limit_id, window_start, resets_at
+  );

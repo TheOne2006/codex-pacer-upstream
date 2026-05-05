@@ -63,12 +63,12 @@ pub fn save_subscription_profile(
 
 pub fn list_subscription_records(conn: &Connection) -> rusqlite::Result<Vec<SubscriptionRecord>> {
     let mut stmt = conn.prepare(
-        "
+    "
     SELECT id, paid_at, service_start, service_end, amount_usd, plan_type, note, created_at, updated_at
     FROM subscription_records
     ORDER BY service_start DESC, paid_at DESC, id DESC
     ",
-    )?;
+  )?;
 
     let records = stmt
         .query_map([], subscription_record_from_row)?
@@ -156,14 +156,15 @@ pub fn delete_subscription_record(conn: &Connection, id: i64) -> Result<bool, St
 }
 
 fn get_subscription_record(conn: &Connection, id: i64) -> Result<SubscriptionRecord, String> {
-    conn.query_row(
-        "
+    conn
+    .query_row(
+      "
       SELECT id, paid_at, service_start, service_end, amount_usd, plan_type, note, created_at, updated_at
       FROM subscription_records
       WHERE id = ?1
       ",
-        params![id],
-        subscription_record_from_row,
+      params![id],
+      subscription_record_from_row,
     )
     .map_err(|error| error.to_string())
 }
@@ -245,43 +246,76 @@ mod tests {
     use crate::database::init_db;
 
     #[test]
+    fn subscription_profile_is_normalized_to_usd() {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+
+        init_db(&conn).expect("init database");
+        save_subscription_profile(
+            &conn,
+            &SubscriptionProfile {
+                plan_type: "pro".to_string(),
+                currency: "eur".to_string(),
+                monthly_price: 42.0,
+                billing_anchor_day: 9,
+                updated_at: "2026-04-07T00:00:00Z".to_string(),
+            },
+        )
+        .expect("save profile");
+
+        let profile = get_subscription_profile(&conn).expect("load profile");
+
+        assert_eq!(profile.currency, "USD");
+        assert_eq!(profile.monthly_price, 42.0);
+        assert_eq!(profile.billing_anchor_day, 9);
+    }
+
+    #[test]
     fn subscription_records_round_trip() {
         let conn = Connection::open_in_memory().expect("open in-memory database");
 
         init_db(&conn).expect("init database");
+        assert!(list_subscription_records(&conn)
+            .expect("list empty")
+            .is_empty());
+
         let created = create_subscription_record(
             &conn,
             &SubscriptionRecordInput {
                 paid_at: "2026-04-16".to_string(),
                 service_start: "2026-04-16".to_string(),
                 service_end: "2026-05-16".to_string(),
-                amount_usd: 19.99,
-                plan_type: "plus".to_string(),
-                note: Some("user@example.com".to_string()),
+                amount_usd: 20.0,
+                plan_type: " plus ".to_string(),
+                note: Some(" renewal ".to_string()),
             },
         )
         .expect("create record");
 
         assert_eq!(created.plan_type, "plus");
-        assert_eq!(created.note.as_deref(), Some("user@example.com"));
+        assert_eq!(created.note.as_deref(), Some("renewal"));
+        assert_eq!(
+            list_subscription_records(&conn)
+                .expect("list records")
+                .len(),
+            1
+        );
 
         let updated = update_subscription_record(
             &conn,
             created.id,
             &SubscriptionRecordInput {
-                paid_at: "2026-04-17".to_string(),
-                service_start: "2026-04-17".to_string(),
-                service_end: "2026-05-17".to_string(),
-                amount_usd: 100.0,
-                plan_type: "pro_x5".to_string(),
-                note: Some("updated@example.com".to_string()),
+                paid_at: "2026-04-16".to_string(),
+                service_start: "2026-04-16".to_string(),
+                service_end: "2026-05-16".to_string(),
+                amount_usd: 200.0,
+                plan_type: "pro".to_string(),
+                note: None,
             },
         )
         .expect("update record");
 
-        assert_eq!(updated.amount_usd, 100.0);
-        assert_eq!(updated.plan_type, "pro_x5");
-        assert_eq!(list_subscription_records(&conn).expect("list records").len(), 1);
+        assert_eq!(updated.amount_usd, 200.0);
+        assert_eq!(updated.note, None);
         assert!(delete_subscription_record(&conn, created.id).expect("delete record"));
         assert!(list_subscription_records(&conn)
             .expect("list after delete")
@@ -289,23 +323,25 @@ mod tests {
     }
 
     #[test]
-    fn subscription_record_rejects_invalid_dates() {
+    fn subscription_record_rejects_invalid_service_period() {
         let conn = Connection::open_in_memory().expect("open in-memory database");
-
         init_db(&conn).expect("init database");
-        let error = create_subscription_record(
+
+        let result = create_subscription_record(
             &conn,
             &SubscriptionRecordInput {
                 paid_at: "2026-04-16".to_string(),
                 service_start: "2026-05-16".to_string(),
                 service_end: "2026-04-16".to_string(),
-                amount_usd: 19.99,
+                amount_usd: 20.0,
                 plan_type: "plus".to_string(),
                 note: None,
             },
-        )
-        .expect_err("reject invalid date range");
+        );
 
-        assert!(error.contains("serviceEnd"));
+        assert!(result.is_err());
+        assert!(list_subscription_records(&conn)
+            .expect("list after reject")
+            .is_empty());
     }
 }

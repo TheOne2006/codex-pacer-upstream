@@ -35,6 +35,7 @@ export type TranslationSet = {
     autoScan: string
     disabled: string
     everyMinutes: (minutes: number) => string
+    timeRange: string
     quotaWindow: string
     earlier: string
     newer: string
@@ -50,6 +51,7 @@ export type TranslationSet = {
     searchTitleOrSession: string
     customRangeStartDate: string
     customRangeEndDate: string
+    bucketAnchor: (bucketLabel: string) => string
   }
   status: {
     waitingForFirstScan: string
@@ -65,7 +67,6 @@ export type TranslationSet = {
   }
   buckets: Record<OverviewBucket, string>
   bucketDescriptions: {
-    subscriptionMonth: (day: number) => string
     currentFiveHourWindow: string
     historicalFiveHourWindow: string
     currentSevenDayWindow: string
@@ -86,13 +87,11 @@ export type TranslationSet = {
     planPerMonth: (planType: string, price: string) => string
     subscriptionLedgerNote: (count: number) => string
     noSubscriptionRecords: string
-    monthlyFeeShare: string
   }
   overview: {
     distribution: string
     modelShare: string
     costStructure: string
-    sourceShare: string
   }
   conversationList: {
     eyebrow: string
@@ -105,7 +104,6 @@ export type TranslationSet = {
     modelBreakdown: string
     conversationModelBreakdown: string
     conversationCostBreakdown: string
-    conversationSourceBreakdown: string
     turnTimelineEyebrow: string
     turnUsage: string
     latestTurns: (count: number) => string
@@ -123,8 +121,10 @@ export type TranslationSet = {
     valueVsTokens: string
     apiValue: string
     tokens: string
+    noTrendData: string
     noShareData: string
-    valueUnavailableTokenFallback: string
+    dimension: string
+    metric: string
     dimensionControlLabel: string
     metricControlLabel: string
     byModel: string
@@ -141,6 +141,8 @@ export type TranslationSet = {
     remaining: string
     cumulativeValue: string
     windowValue: string
+    sourceDistribution: string
+    valueUnavailableTokenFallback: string
   }
   sources: {
     label: string
@@ -276,39 +278,44 @@ export type TranslationSet = {
         popupShowActions: string
         moveUp: string
         moveDown: string
+        groups: {
+          display: string
+          valueSource: string
+          pace: string
+          popup: string
+        }
       }
       subscription: {
         eyebrow: string
         title: string
         description: string
-        planType: string
-        currency: string
-        currencyNote: string
-        monthlyPrice: string
-        billingAnchorDay: string
-        billingAnchorDayNote: string
         accountStatus: string
+        accountStatusNote: string
         accountUnavailable: string
         accountRequiresLogin: string
         accountApiKey: string
         accountUnknown: string
+        ledgerNote: string
+        addRecord: string
+        addRecordTitle: string
+        editRecordTitle: string
+        saveRecord: string
+        updateRecord: string
+        editRecord: string
+        cancelEditRecord: string
+        removeRecord: string
+        emptyRecords: string
+        serviceStart: string
+        serviceEnd: string
+        serviceEndNote: string
+        amountUsd: string
+        planType: string
         planPlus: string
         planPro5: string
         planPro10: string
-        amountUsd: string
-        serviceStart: string
-        serviceEnd: string
-        addRecordTitle: string
-        editRecordTitle: string
-        addRecord: string
-        updateRecord: string
-        saveRecord: string
-        editRecord: string
-        removeRecord: string
-        cancelEditRecord: string
-        emptyRecords: string
         accountEmail: string
         accountEmailPlaceholder: string
+        note: string
       }
       liveQuota: {
         eyebrow: string

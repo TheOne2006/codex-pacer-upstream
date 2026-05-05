@@ -30,7 +30,6 @@ import {
   setCodexSourceSelected,
   upsertCodexSource,
   updateSubscriptionRecord,
-  updateSubscriptionProfile,
   updateSyncSettings,
 } from './app/api'
 import {
@@ -43,28 +42,20 @@ import {
   formatUsd,
   todayInputValue,
 } from './app/format'
-import type { TranslationSet } from './app/i18n'
 import { useI18n } from './app/useI18n'
 import type {
   AppView,
-  CodexAccountStatus,
   CodexSource,
   CodexSourceCandidate,
   CodexSourceInput,
-  CompositionShare,
   ConversationDetail,
   ConversationListItem,
-  ConversationSessionSummary,
-  ConversationTurnPoint,
   LiveRateLimitSnapshot,
-  ModelShare,
   OverviewBucket,
   OverviewResponse,
   ShareDimension,
   ShareMode,
-  ShareSlice,
-  SourceShare,
-  SubscriptionProfile,
+  CodexAccountStatus,
   SubscriptionRecord,
   SubscriptionRecordInput,
   SyncSettings,
@@ -74,6 +65,28 @@ import { QuotaTrendChart } from './components/QuotaTrendChart'
 import { SettingsPanel } from './components/SettingsPanel'
 import { TrendChart } from './components/TrendChart'
 import {
+  anchorForBucket,
+  bucketUsesAnchor,
+  CALENDAR_BUCKETS,
+  createCalendarAnchors,
+  formatCustomRangeLabel,
+  formatCalendarWindowLabel,
+  LIVE_QUOTA_BUCKETS,
+  monthInputValue,
+  normalizeAnchorForBucket,
+  shiftAnchorForBucket,
+  type CalendarAnchorBucket,
+} from './features/dashboard/dateWindows'
+import { selectActiveRateLimitWindow } from './features/dashboard/liveQuota'
+import { buildQueryKey } from './features/dashboard/queryKey'
+import { buildShareSlices, shareChartTitle } from './features/dashboard/shareSlices'
+import {
+  formatModelSummary,
+  formatSessionLabel,
+  formatTurnHeadline,
+  formatTurnStatus,
+} from './features/conversations/turnFormat'
+import {
   SidebarSourceManager,
   SourceAddModal,
   SourceDeleteDialog,
@@ -81,34 +94,32 @@ import {
   SourceSelectorPanel,
   upsertSourceInList,
 } from './features/sources'
-import { isErrorLikeStatus } from './shared/lib/status'
 import { MetricCard, MiniCard } from './shared/ui/MetricCards'
+import { isErrorLikeStatus } from './shared/lib/status'
 
 const MENU_BAR_POPUP_WINDOW_LABEL = 'menu-bar-popup'
 const MENU_BAR_POPUP_REFRESH_EVENT = 'codex-counter://menu-bar-popup-refresh'
 const MENU_BAR_POPUP_LANGUAGE_EVENT = 'codex-counter://language-changed'
 const PRODUCT_NAME = 'Codex Pacer'
 
-const BUCKETS: OverviewBucket[] = [
-  'five_hour',
-  'day',
-  'seven_day',
-  'week',
-  'subscription_month',
-  'month',
-  'year',
-  'custom',
-  'total',
-]
+type StatusMessageKey = 'waitingForFirstScan' | 'fetchingLiveQuotaWindow'
+
+function statusMessageForKey(key: StatusMessageKey, t: ReturnType<typeof useI18n>['t']) {
+  return key === 'waitingForFirstScan' ? t.status.waitingForFirstScan : t.status.fetchingLiveQuotaWindow
+}
 
 function App() {
   const { language, setLanguage, t } = useI18n()
   const [view, setView] = useState<AppView>('overview')
-  const [bucket, setBucket] = useState<OverviewBucket>('subscription_month')
+  const [bucket, setBucket] = useState<OverviewBucket>('month')
   const [liveWindowOffset, setLiveWindowOffset] = useState(0)
-  const [anchor, setAnchor] = useState(todayInputValue())
+  const [appLaunchDate] = useState(() => todayInputValue())
+  const [calendarAnchors, setCalendarAnchors] = useState<Record<CalendarAnchorBucket, string>>(() =>
+    createCalendarAnchors(appLaunchDate),
+  )
   const [customStart, setCustomStart] = useState(todayInputValue())
   const [customEnd, setCustomEnd] = useState(todayInputValue())
+  const [yearDraft, setYearDraft] = useState(() => new Date().getFullYear().toString())
   const [shareMode, setShareMode] = useState<ShareMode>('value')
   const [shareDimension, setShareDimension] = useState<ShareDimension>('model')
   const [overview, setOverview] = useState<OverviewResponse | null>(null)
@@ -116,7 +127,6 @@ function App() {
   const [selectedRootSessionId, setSelectedRootSessionId] = useState<string | null>(null)
   const [detail, setDetail] = useState<ConversationDetail | null>(null)
   const [syncSettings, setSyncSettings] = useState<SyncSettings | null>(null)
-  const [subscriptionProfile, setSubscriptionProfile] = useState<SubscriptionProfile | null>(null)
   const [codexSources, setCodexSources] = useState<CodexSource[]>([])
   const [sourcePanelOpen, setSourcePanelOpen] = useState(false)
   const [sourceManagerOpen, setSourceManagerOpen] = useState(false)
@@ -134,7 +144,8 @@ function App() {
   const [loadedQueryKey, setLoadedQueryKey] = useState<string | null>(null)
   const [dashboardRevision, setDashboardRevision] = useState(0)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [statusMessage, setStatusMessage] = useState(t.status.waitingForFirstScan)
+  const [statusMessageKey, setStatusMessageKey] = useState<StatusMessageKey | null>('waitingForFirstScan')
+  const [statusMessageText, setStatusMessageText] = useState('')
   const [isBusy, setIsBusy] = useState(false)
   const [search, setSearch] = useState('')
   const deferredSearch = useDeferredValue(search)
@@ -145,8 +156,33 @@ function App() {
   const detailCacheRef = useRef(new Map<string, ConversationDetail>())
   const latestDetailRequestIdRef = useRef(0)
   const [hasBootstrapped, setHasBootstrapped] = useState(false)
+  const anchor = anchorForBucket(bucket, calendarAnchors)
   const selectedSourceIds = codexSources.filter((source) => source.selected).map((source) => source.id)
   const sourceSelectionKey = selectedSourceIds.join(',')
+  const dashboardSourceIds = selectedSourceIds.length > 0 ? selectedSourceIds : null
+  const statusMessage = statusMessageKey ? statusMessageForKey(statusMessageKey, t) : statusMessageText
+  const setStatusMessage = useCallback((next: string | ((current: string) => string)) => {
+    setStatusMessageKey(null)
+    setStatusMessageText((current) => (typeof next === 'function' ? next(current) : next))
+  }, [])
+  const setStatusMessageByKey = useCallback((key: StatusMessageKey) => {
+    setStatusMessageKey(key)
+    setStatusMessageText('')
+  }, [])
+
+  const setCalendarAnchor = useCallback((targetBucket: CalendarAnchorBucket, value: string) => {
+    setCalendarAnchors((current) => ({
+      ...current,
+      [targetBucket]: normalizeAnchorForBucket(targetBucket, value, current[targetBucket]),
+    }))
+  }, [])
+
+  const shiftCalendarAnchor = useCallback((targetBucket: CalendarAnchorBucket, amount: number) => {
+    setCalendarAnchors((current) => ({
+      ...current,
+      [targetBucket]: shiftAnchorForBucket(targetBucket, current[targetBucket], amount),
+    }))
+  }, [])
 
   const waitForScanToSettle = useCallback(async () => {
     const startedAt = Date.now()
@@ -162,6 +198,12 @@ function App() {
     syncSettingsRef.current = syncSettings
   }, [syncSettings])
 
+  useEffect(() => {
+    if (bucket === 'year') {
+      setYearDraft(calendarAnchors.year.slice(0, 4))
+    }
+  }, [bucket, calendarAnchors.year])
+
   const loadShell = useCallback(async (requestScan = false) => {
     const requestId = latestLoadRequestIdRef.current + 1
     latestLoadRequestIdRef.current = requestId
@@ -171,9 +213,6 @@ function App() {
     const requestCustomEnd = requestBucket === 'custom' ? customEnd : null
     const requestSearch = deferredSearch || null
     const requestLiveWindowOffset = requestBucket === 'five_hour' || requestBucket === 'seven_day' ? liveWindowOffset : 0
-    const requestSourceIds = codexSources.filter((source) => source.selected).map((source) => source.id)
-    const requestDashboardSourceIds = requestSourceIds.length > 0 ? requestSourceIds : null
-    const requestSourceSelectionKey = requestSourceIds.join(',')
     lastRequestedQueryKeyRef.current = buildQueryKey(
       requestBucket,
       requestAnchor,
@@ -181,17 +220,17 @@ function App() {
       requestCustomEnd,
       requestSearch,
       requestLiveWindowOffset,
-      requestSourceSelectionKey,
+      sourceSelectionKey,
     )
     setIsBusy(true)
     if ((requestBucket === 'five_hour' || requestBucket === 'seven_day') && requestLiveWindowOffset === 0) {
-      setStatusMessage(t.status.fetchingLiveQuotaWindow)
+      setStatusMessageByKey('fetchingLiveQuotaWindow')
     }
     try {
       if (requestScan) {
         try {
           const scans = codexSources.length > 0
-            ? await scanCodexSources(requestDashboardSourceIds)
+            ? await scanCodexSources(dashboardSourceIds)
             : [await scanCodexUsage(syncSettingsRef.current?.codexHome ?? null)]
           const scannedFiles = scans.reduce((sum, scan) => sum + scan.scannedFiles, 0)
           const updatedSessions = scans.reduce((sum, scan) => sum + scan.updatedSessions, 0)
@@ -211,7 +250,7 @@ function App() {
         requestAnchor,
         requestSearch,
         requestLiveWindowOffset,
-        requestDashboardSourceIds,
+        dashboardSourceIds,
         requestCustomStart,
         requestCustomEnd,
       )
@@ -231,7 +270,6 @@ function App() {
         setOverview(snapshot.overview)
         setConversations(snapshot.conversations)
         setSyncSettings(snapshot.syncSettings)
-        setSubscriptionProfile(snapshot.subscriptionProfile)
         setCodexSources(snapshot.codexSources)
         setSubscriptionRecords(snapshot.subscriptionRecords)
         setAccountStatus(snapshot.accountStatus)
@@ -247,9 +285,10 @@ function App() {
             requestCustomEnd,
             requestSearch,
             snapshot.overview.liveWindowOffset,
-            requestSourceSelectionKey,
+            sourceSelectionKey,
           ),
         )
+        setStatusMessage((current) => (isErrorLikeStatus(current) ? '' : current))
         setSelectedRootSessionId((current) =>
           current && snapshot.conversations.some((item) => item.rootSessionId === current)
             ? current
@@ -269,7 +308,21 @@ function App() {
         setIsBusy(false)
       }
     }
-  }, [anchor, bucket, codexSources, customEnd, customStart, deferredSearch, liveWindowOffset, t, waitForScanToSettle])
+  }, [
+    anchor,
+    bucket,
+    codexSources.length,
+    customEnd,
+    customStart,
+    dashboardSourceIds,
+    deferredSearch,
+    liveWindowOffset,
+    setStatusMessage,
+    setStatusMessageByKey,
+    sourceSelectionKey,
+    t,
+    waitForScanToSettle,
+  ])
 
   const currentQueryKey = buildQueryKey(
     bucket,
@@ -284,26 +337,6 @@ function App() {
   useEffect(() => {
     loadShellRef.current = loadShell
   }, [loadShell])
-
-  useEffect(() => {
-    setStatusMessage((current) => {
-      if (
-        current === 'Waiting for first scan…' ||
-        current === '等待首次扫描…' ||
-        current === t.status.waitingForFirstScan
-      ) {
-        return t.status.waitingForFirstScan
-      }
-      if (
-        current === 'Fetching live quota window…' ||
-        current === '正在获取 live quota 窗口…' ||
-        current === t.status.fetchingLiveQuotaWindow
-      ) {
-        return t.status.fetchingLiveQuotaWindow
-      }
-      return current
-    })
-  }, [t])
 
   useEffect(() => {
     if (!isTauri()) return
@@ -355,7 +388,7 @@ function App() {
       }
       setStatusMessage(String(error))
     }
-  }, [])
+  }, [setStatusMessage])
 
   useEffect(() => {
     let cancelled = false
@@ -426,8 +459,24 @@ function App() {
   async function handleRefreshPricing() {
     setIsBusy(true)
     try {
-      await refreshPricing()
+      detailCacheRef.current.clear()
+      setDetail(null)
+      try {
+        await refreshPricing()
+      } catch (error) {
+        const message = String(error)
+        if (!message.includes('already running')) {
+          throw error
+        }
+        setStatusMessage(t.status.backgroundScanAlreadyRunning)
+        await waitForScanToSettle()
+        await refreshPricing()
+      }
+      detailCacheRef.current.clear()
       await loadShell(false)
+      if (isTauri()) {
+        await emitTo(MENU_BAR_POPUP_WINDOW_LABEL, MENU_BAR_POPUP_REFRESH_EVENT, {}).catch(() => {})
+      }
       setStatusMessage(t.status.pricingRefreshed)
     } catch (error) {
       setStatusMessage(String(error))
@@ -510,9 +559,6 @@ function App() {
       detailCacheRef.current.clear()
       await loadShell(false)
       setSourceManagerMessage(t.sources.downloadedAndImported(result.scanResult.scannedFiles))
-      if (isTauri()) {
-        await emitTo(MENU_BAR_POPUP_WINDOW_LABEL, MENU_BAR_POPUP_REFRESH_EVENT, {}).catch(() => {})
-      }
     } catch (error) {
       setSourceManagerMessage(String(error))
       await refreshCodexSources()
@@ -534,7 +580,7 @@ function App() {
     }
 
     for (const source of remoteSources) {
-      // Sequential by design: avoids concurrent SSH/tar imports racing over the same database.
+      // Sequential by design: avoids multiple SSH/tar imports racing over the same local DB.
       await handleDownloadSource(source.id)
     }
   }
@@ -583,14 +629,9 @@ function App() {
 
   async function handleSaveSettings(payload: {
     syncSettings: SyncSettings
-    subscriptionProfile: SubscriptionProfile
   }) {
-    const [nextSyncSettings, nextSubscriptionProfile] = await Promise.all([
-      updateSyncSettings(payload.syncSettings),
-      updateSubscriptionProfile(payload.subscriptionProfile),
-    ])
+    const nextSyncSettings = await updateSyncSettings(payload.syncSettings)
     setSyncSettings(nextSyncSettings)
-    setSubscriptionProfile(nextSubscriptionProfile)
     await loadShell(false)
     if (isTauri()) {
       await emitTo(MENU_BAR_POPUP_WINDOW_LABEL, MENU_BAR_POPUP_REFRESH_EVENT, {}).catch(() => {})
@@ -599,22 +640,28 @@ function App() {
   }
 
   async function handleSaveSubscriptionRecord(payload: SubscriptionRecordInput, id?: number | null) {
-    if (id) {
+    if (id && id > 0) {
       await updateSubscriptionRecord(id, payload)
     } else {
       await createSubscriptionRecord(payload)
     }
-    const nextRecords = await listSubscriptionRecords()
-    setSubscriptionRecords(nextRecords)
+    const nextSubscriptionRecords = await listSubscriptionRecords()
+    setSubscriptionRecords(nextSubscriptionRecords)
     await loadShell(false)
+    if (isTauri()) {
+      await emitTo(MENU_BAR_POPUP_WINDOW_LABEL, MENU_BAR_POPUP_REFRESH_EVENT, {}).catch(() => {})
+    }
     setStatusMessage(t.status.subscriptionRecordSaved)
   }
 
   async function handleDeleteSubscriptionRecord(id: number) {
     await deleteSubscriptionRecord(id)
-    const nextRecords = await listSubscriptionRecords()
-    setSubscriptionRecords(nextRecords)
+    const nextSubscriptionRecords = await listSubscriptionRecords()
+    setSubscriptionRecords(nextSubscriptionRecords)
     await loadShell(false)
+    if (isTauri()) {
+      await emitTo(MENU_BAR_POPUP_WINDOW_LABEL, MENU_BAR_POPUP_REFRESH_EVENT, {}).catch(() => {})
+    }
     setStatusMessage(t.status.subscriptionRecordDeleted)
   }
 
@@ -625,20 +672,21 @@ function App() {
   const activeLiveWindowOffset = activeOverview?.liveWindowOffset ?? liveWindowOffset
   const activeLiveWindowCount = activeOverview?.liveWindowCount ?? (isLiveBucket ? 1 : 0)
   const isHistoricalLiveWindow = isLiveBucket && activeLiveWindowOffset > 0
+  const calendarWindowLabel = formatCalendarWindowLabel(bucket, anchor, language)
   const currentBucketLabel =
     activeOverview?.bucket === 'custom'
       ? formatCustomRangeLabel(activeOverview.windowStart, activeOverview.windowEnd, language)
-      : activeOverview?.bucket === 'subscription_month' && subscriptionProfile
-      ? t.bucketDescriptions.subscriptionMonth(subscriptionProfile.billingAnchorDay)
-      : bucket === 'five_hour'
-        ? isHistoricalLiveWindow
-          ? t.bucketDescriptions.historicalFiveHourWindow
-          : t.bucketDescriptions.currentFiveHourWindow
-        : bucket === 'seven_day'
+      : activeOverview?.bucket === 'subscription_month'
+        ? formatCustomRangeLabel(activeOverview.windowStart, activeOverview.windowEnd, language)
+        : bucket === 'five_hour'
           ? isHistoricalLiveWindow
-            ? t.bucketDescriptions.historicalSevenDayWindow
-            : t.bucketDescriptions.currentSevenDayWindow
-      : t.buckets[bucket]
+            ? t.bucketDescriptions.historicalFiveHourWindow
+            : t.bucketDescriptions.currentFiveHourWindow
+          : bucket === 'seven_day'
+            ? isHistoricalLiveWindow
+              ? t.bucketDescriptions.historicalSevenDayWindow
+              : t.bucketDescriptions.currentSevenDayWindow
+            : calendarWindowLabel ?? t.buckets[bucket]
   const shouldShowStatusNotice = isErrorLikeStatus(statusMessage)
   const shouldShowLoadingNotice =
     isBusy && !shouldShowStatusNotice && isLiveBucket && liveWindowOffset === 0
@@ -671,8 +719,7 @@ function App() {
     activeOverview && isLiveBucket
       ? `${formatCompactDateTime(activeOverview.windowStart, language)} → ${formatCompactDateTime(activeOverview.windowEnd, language)}`
       : null
-  const anchorInputLabel =
-    language === 'zh-CN' ? `${t.buckets[bucket]}统计锚点日期` : `${t.buckets[bucket]} anchor date`
+  const anchorInputLabel = t.common.bucketAnchor(t.buckets[bucket])
 
   return (
     <div className="app-shell">
@@ -697,23 +744,12 @@ function App() {
             >
               <Sparkles size={18} /> {t.nav.conversations}
             </button>
-            <SidebarSourceManager onOpenManager={() => setSourceManagerOpen(true)} />
-          </div>
-
-          <div className="action-stack">
-            <button className="accent-button" disabled={isBusy} onClick={handleRescan} type="button">
-              <RefreshCw size={16} /> {t.actions.rescanNow}
-            </button>
-            <button className="ghost-button" disabled={isBusy} onClick={handleRefreshPricing} type="button">
-              <BadgeDollarSign size={16} /> {t.actions.refreshPricing}
-            </button>
+            <SidebarSourceManager
+              onOpenManager={() => setSourceManagerOpen(true)}
+            />
           </div>
 
           <div className="sidebar-footer">
-            <button className="ghost-button" onClick={() => setSettingsOpen(true)} type="button">
-              <Settings2 size={16} /> {t.actions.settings}
-            </button>
-
             <div className="status-panel sidebar-status-panel">
               <span className="eyebrow">{t.common.autoScan}</span>
               <strong>
@@ -723,6 +759,33 @@ function App() {
               </strong>
               <Clock3 size={18} />
             </div>
+
+            <div className="sidebar-utility-row" aria-label={t.sources.maintenanceActions}>
+              <button
+                className="ghost-button sidebar-utility-button sidebar-utility-button--scan"
+                disabled={isBusy}
+                onClick={handleRescan}
+                title={t.actions.rescanNow}
+                type="button"
+              >
+                <RefreshCw size={15} />
+                <span>{t.actions.rescanNow}</span>
+              </button>
+              <button
+                className="ghost-button sidebar-utility-button sidebar-utility-button--pricing"
+                disabled={isBusy}
+                onClick={handleRefreshPricing}
+                title={t.actions.refreshPricing}
+                type="button"
+              >
+                <BadgeDollarSign size={15} />
+                <span>{t.actions.refreshPricing}</span>
+              </button>
+            </div>
+
+            <button className="ghost-button" onClick={() => setSettingsOpen(true)} type="button">
+              <Settings2 size={16} /> {t.actions.settings}
+            </button>
           </div>
         </aside>
 
@@ -730,27 +793,52 @@ function App() {
           <section className="hero-panel hero-panel-filters hero-panel-filters--controls-only">
             <div className="hero-filter-region hero-filter-region--standalone">
               <div className="hero-filter-controls">
-                <SourceSelectorPanel
-                  isOpen={sourcePanelOpen}
-                  message={sourceSelectionMessage}
-                  onToggleOpen={() => setSourcePanelOpen((current) => !current)}
-                  onToggleSource={handleToggleSource}
-                  sources={codexSources}
-                />
-                <div className="pill-strip">
-                  {BUCKETS.map((option) => (
-                    <button
-                      key={option}
-                      className={option === bucket ? 'active' : ''}
-                      onClick={() => {
-                        setBucket(option)
-                        setLiveWindowOffset(0)
-                      }}
-                      type="button"
-                    >
-                      {t.buckets[option]}
-                    </button>
-                  ))}
+                <div className="hero-filter-left">
+	                  <SourceSelectorPanel
+	                    isOpen={sourcePanelOpen}
+	                    message={sourceSelectionMessage}
+	                    onToggleOpen={() => setSourcePanelOpen((current) => !current)}
+	                    onToggleSource={handleToggleSource}
+	                    sources={codexSources}
+	                  />
+                  <div className="time-filter-panel">
+                  <div className="time-filter-group">
+                    <span className="time-filter-label">{t.common.timeRange}</span>
+                    <div className="pill-strip pill-strip--calendar" role="group" aria-label={t.common.timeRange}>
+                      {CALENDAR_BUCKETS.map((option) => (
+                        <button
+                          key={option}
+                          className={option === bucket ? 'active' : ''}
+                          onClick={() => {
+                            setBucket(option)
+                            setLiveWindowOffset(0)
+                          }}
+                          type="button"
+                        >
+                          {t.buckets[option]}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="time-filter-group">
+                    <span className="time-filter-label">{t.charts.liveQuotaEyebrow}</span>
+                    <div className="pill-strip pill-strip--live" role="group" aria-label={t.charts.liveQuotaEyebrow}>
+                      {LIVE_QUOTA_BUCKETS.map((option) => (
+                        <button
+                          key={option}
+                          className={option === bucket ? 'active' : ''}
+                          onClick={() => {
+                            setBucket(option)
+                            setLiveWindowOffset(0)
+                          }}
+                          type="button"
+                        >
+                          {t.buckets[option]}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  </div>
                 </div>
                 {bucket === 'custom' ? (
                   <div className="custom-range-controls">
@@ -782,15 +870,126 @@ function App() {
                       />
                     </label>
                   </div>
-                ) : bucketUsesAnchor(bucket) ? (
-                  <input
-                    aria-label={anchorInputLabel}
-                    className="anchor-input anchor-input-inline"
-                    onChange={(event) => setAnchor(event.target.value)}
-                    name="bucketAnchorDate"
-                    type="date"
-                    value={anchor}
-                  />
+                ) : bucket === 'day' ? (
+                  <div className="period-nav period-nav--editable">
+                    <button
+                      aria-label={t.common.earlier}
+                      className="ghost-button live-window-nav-button"
+                      onClick={() => shiftCalendarAnchor('day', -1)}
+                      title={t.common.earlier}
+                      type="button"
+                    >
+                      <ChevronLeft aria-hidden="true" size={16} />
+                    </button>
+                    <input
+                      aria-label={anchorInputLabel}
+                      className="anchor-input anchor-input-inline period-nav-input"
+                      onChange={(event) => setCalendarAnchor('day', event.target.value)}
+                      name="bucketAnchorDate"
+                      type="date"
+                      value={calendarAnchors.day}
+                    />
+                    <button
+                      aria-label={t.common.newer}
+                      className="ghost-button live-window-nav-button"
+                      onClick={() => shiftCalendarAnchor('day', 1)}
+                      title={t.common.newer}
+                      type="button"
+                    >
+                      <ChevronRight aria-hidden="true" size={16} />
+                    </button>
+                  </div>
+                ) : bucket === 'week' ? (
+                  <div className="period-nav period-nav--editable period-nav--week">
+                    <button
+                      aria-label={t.common.earlier}
+                      className="ghost-button live-window-nav-button"
+                      onClick={() => shiftCalendarAnchor('week', -1)}
+                      title={t.common.earlier}
+                      type="button"
+                    >
+                      <ChevronLeft aria-hidden="true" size={16} />
+                    </button>
+                    <div className="period-nav-copy period-nav-copy--week-range">
+                      <strong>{calendarWindowLabel}</strong>
+                    </div>
+                    <button
+                      aria-label={t.common.newer}
+                      className="ghost-button live-window-nav-button"
+                      onClick={() => shiftCalendarAnchor('week', 1)}
+                      title={t.common.newer}
+                      type="button"
+                    >
+                      <ChevronRight aria-hidden="true" size={16} />
+                    </button>
+                  </div>
+                ) : bucket === 'month' || bucket === 'subscription_month' ? (
+                  <div className="period-nav period-nav--editable">
+                    <button
+                      aria-label={t.common.earlier}
+                      className="ghost-button live-window-nav-button"
+                      onClick={() => shiftCalendarAnchor('month', -1)}
+                      title={t.common.earlier}
+                      type="button"
+                    >
+                      <ChevronLeft aria-hidden="true" size={16} />
+                    </button>
+                    <input
+                      aria-label={anchorInputLabel}
+                      className="anchor-input anchor-input-inline anchor-input-month period-nav-input"
+                      onChange={(event) => setCalendarAnchor('month', `${event.target.value}-01`)}
+                      name="bucketAnchorMonth"
+                      type="month"
+                      value={monthInputValue(calendarAnchors.month)}
+                    />
+                    <button
+                      aria-label={t.common.newer}
+                      className="ghost-button live-window-nav-button"
+                      onClick={() => shiftCalendarAnchor('month', 1)}
+                      title={t.common.newer}
+                      type="button"
+                    >
+                      <ChevronRight aria-hidden="true" size={16} />
+                    </button>
+                  </div>
+                ) : bucket === 'year' ? (
+                  <div className="period-nav period-nav--editable">
+                    <button
+                      aria-label={t.common.earlier}
+                      className="ghost-button live-window-nav-button"
+                      onClick={() => shiftCalendarAnchor('year', -1)}
+                      title={t.common.earlier}
+                      type="button"
+                    >
+                      <ChevronLeft aria-hidden="true" size={16} />
+                    </button>
+                    <input
+                      aria-label={anchorInputLabel}
+                      className="anchor-input anchor-input-inline anchor-input-year period-nav-input"
+                      inputMode="numeric"
+                      name="bucketAnchorYear"
+                      onBlur={() => setYearDraft(calendarAnchors.year.slice(0, 4))}
+                      onChange={(event) => {
+                        const nextDraft = event.target.value.replace(/\D/g, '').slice(0, 4)
+                        setYearDraft(nextDraft)
+                        if (nextDraft.length === 4) {
+                          setCalendarAnchor('year', `${nextDraft}-01-01`)
+                        }
+                      }}
+                      pattern="[0-9]*"
+                      type="text"
+                      value={yearDraft}
+                    />
+                    <button
+                      aria-label={t.common.newer}
+                      className="ghost-button live-window-nav-button"
+                      onClick={() => shiftCalendarAnchor('year', 1)}
+                      title={t.common.newer}
+                      type="button"
+                    >
+                      <ChevronRight aria-hidden="true" size={16} />
+                    </button>
+                  </div>
                 ) : isLiveBucket ? (
                   <div className="live-window-nav">
                     <button
@@ -945,13 +1144,12 @@ function App() {
                   onModeChange={setShareMode}
                   dimension={shareDimension}
                   onDimensionChange={setShareDimension}
-                  title={
-                    shareDimension === 'model'
-                      ? t.overview.modelShare
-                      : shareDimension === 'source'
-                        ? t.overview.sourceShare
-                        : t.overview.costStructure
-                  }
+                  title={shareChartTitle(
+                    shareDimension,
+                    t.overview.modelShare,
+                    t.overview.costStructure,
+                    t.charts.sourceDistribution,
+                  )}
                   eyebrow={t.overview.distribution}
                 />
               </section>
@@ -1014,7 +1212,6 @@ function App() {
                         </div>
                         <div className="meta-row">
                           <span>{formatShortDate(conversation.updatedAt, language)}</span>
-                          <span>{formatPercent(conversation.subscriptionShare, language)}</span>
                         </div>
                       </button>
                     ))
@@ -1047,11 +1244,6 @@ function App() {
                         value={formatUsd(activeDetail.apiValueUsd, language)}
                       />
                       <MiniCard
-                        label={t.metrics.monthlyFeeShare}
-                        tone="accent"
-                        value={formatPercent(activeDetail.subscriptionShare, language)}
-                      />
-                      <MiniCard
                         label={t.charts.tokens}
                         tone="secondary"
                         value={formatTokenCount(activeDetail.totalTokens, language)}
@@ -1064,13 +1256,12 @@ function App() {
                       onModeChange={setShareMode}
                       dimension={shareDimension}
                       onDimensionChange={setShareDimension}
-                      title={
-                        shareDimension === 'model'
-                          ? t.detail.conversationModelBreakdown
-                          : shareDimension === 'source'
-                            ? t.detail.conversationSourceBreakdown
-                          : t.detail.conversationCostBreakdown
-                      }
+                      title={shareChartTitle(
+                        shareDimension,
+                        t.detail.conversationModelBreakdown,
+                        t.detail.conversationCostBreakdown,
+                        t.charts.sourceDistribution,
+                      )}
                       eyebrow={t.detail.modelBreakdown}
                     />
 
@@ -1137,13 +1328,12 @@ function App() {
         language={language}
         liveRateLimits={liveRateLimits}
         onClose={() => setSettingsOpen(false)}
-        onDeleteSubscriptionRecord={handleDeleteSubscriptionRecord}
         onLanguageChange={setLanguage}
+        onDeleteSubscriptionRecord={handleDeleteSubscriptionRecord}
         onSave={handleSaveSettings}
         onSaveSubscriptionRecord={handleSaveSubscriptionRecord}
-        accountStatus={accountStatus}
-        subscriptionProfile={subscriptionProfile}
         subscriptionRecords={subscriptionRecords}
+        accountStatus={accountStatus}
         syncSettings={syncSettings}
       />
 
@@ -1181,123 +1371,3 @@ function App() {
 }
 
 export default App
-
-function bucketUsesAnchor(bucket: OverviewBucket) {
-  return !['five_hour', 'seven_day', 'custom', 'total'].includes(bucket)
-}
-
-function buildQueryKey(
-  bucket: OverviewBucket,
-  anchor: string | null,
-  customStart: string | null,
-  customEnd: string | null,
-  search: string | null,
-  liveWindowOffset: number,
-  sourceSelectionKey = '',
-) {
-  return [
-    bucket,
-    anchor ?? '',
-    customStart ?? '',
-    customEnd ?? '',
-    search ?? '',
-    String(liveWindowOffset),
-    sourceSelectionKey,
-  ].join('::')
-}
-
-function formatCustomRangeLabel(windowStart: string | null, windowEnd: string | null, language: 'zh-CN' | 'en') {
-  return `${formatShortDate(windowStart, language)} → ${formatShortDate(inclusiveWindowEnd(windowEnd), language)}`
-}
-
-function inclusiveWindowEnd(windowEnd: string | null) {
-  if (!windowEnd) return null
-  const timestamp = new Date(windowEnd).getTime()
-  if (!Number.isFinite(timestamp)) return null
-  return new Date(timestamp - 1).toISOString()
-}
-
-function selectActiveRateLimitWindow(
-  liveRateLimits: LiveRateLimitSnapshot | null,
-  bucket: OverviewBucket,
-) {
-  if (!liveRateLimits) return null
-  if (bucket === 'five_hour') return liveRateLimits.primary
-  if (bucket === 'seven_day') return liveRateLimits.secondary
-  return null
-}
-
-function formatTurnHeadline(turn: ConversationTurnPoint, t: TranslationSet) {
-  const content = [turn.userMessage, turn.assistantMessage, turn.turnId]
-    .filter((value): value is string => Boolean(value && value.trim()))
-    .map((value) => value.replace(/\s+/g, ' ').trim())[0]
-
-  if (!content) return t.detail.untitledTurn
-  if (content.length <= 110) return content
-  return `${content.slice(0, 109).trimEnd()}…`
-}
-
-function formatModelSummary(modelIds: string[], t: TranslationSet) {
-  if (modelIds.length === 0) return t.detail.unknownModel
-  if (modelIds.length === 1) return modelIds[0]
-  return `${modelIds[0]} +${modelIds.length - 1}`
-}
-
-function formatSessionLabel(
-  session: ConversationSessionSummary | undefined,
-  sessionId: string,
-  t: TranslationSet,
-) {
-  if (!session) return t.detail.sessionLabel(sessionId)
-  if (session.agentNickname) return session.agentNickname
-  return session.isSubagent ? t.detail.subagent : t.detail.mainSession
-}
-
-function formatTurnStatus(status: string) {
-  if (!status) return null
-  if (status === 'completed') return null
-  return status.replace(/_/g, ' ')
-}
-
-function buildShareSlices(
-  dimension: ShareDimension,
-  modelShares: ModelShare[],
-  compositionShares: CompositionShare[],
-  sourceShares: SourceShare[],
-): ShareSlice[] {
-  if (dimension === 'source') {
-    return sourceShares.map((item) => ({
-      id: item.sourceId,
-      label: item.displayName,
-      secondaryLabel: item.sourceId,
-      apiValueUsd: item.apiValueUsd,
-      totalTokens: item.totalTokens,
-      color: item.color,
-    }))
-  }
-
-  if (dimension === 'composition') {
-    return compositionShares.map((item) => ({
-      id: item.category,
-      label: item.label,
-      secondaryLabel:
-        item.category === 'input'
-          ? 'uncached'
-          : item.category === 'cache'
-            ? 'cached'
-            : 'generated',
-      apiValueUsd: item.apiValueUsd,
-      totalTokens: item.totalTokens,
-      color: item.color,
-    }))
-  }
-
-  return modelShares.map((item) => ({
-    id: item.modelId,
-    label: item.displayName,
-    secondaryLabel: item.modelId,
-    apiValueUsd: item.apiValueUsd,
-    totalTokens: item.totalTokens,
-    color: item.color,
-  }))
-}

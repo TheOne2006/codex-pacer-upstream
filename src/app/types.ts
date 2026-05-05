@@ -47,17 +47,9 @@ export interface SyncSettings {
   updatedAt: string
 }
 
-export interface SubscriptionProfile {
-  planType: string
-  currency: string
-  monthlyPrice: number
-  billingAnchorDay: number
-  updatedAt: string
-}
-
 export interface CodexSource {
   id: string
-  kind: string
+  kind: 'local' | 'ssh' | string
   label: string
   sshAlias: string | null
   hostName: string | null
@@ -108,6 +100,14 @@ export interface CodexSourceDownloadResult {
   scanResult: ScanResult
 }
 
+export interface SubscriptionProfile {
+  planType: string
+  currency: string
+  monthlyPrice: number
+  billingAnchorDay: number
+  updatedAt: string
+}
+
 export interface SubscriptionRecord {
   id: number
   paidAt: string
@@ -120,14 +120,7 @@ export interface SubscriptionRecord {
   updatedAt: string
 }
 
-export interface SubscriptionRecordInput {
-  paidAt: string
-  serviceStart: string
-  serviceEnd: string
-  amountUsd: number
-  planType: string
-  note: string | null
-}
+export type SubscriptionRecordInput = Omit<SubscriptionRecord, 'id' | 'createdAt' | 'updatedAt'>
 
 export interface CodexAccountStatus {
   available: boolean
@@ -315,7 +308,6 @@ export interface ConversationListItem {
   totalTokens: number
   sessionCount: number
   subagentCount: number
-  hasFastMode: boolean
   apiValueUsd: number
   subscriptionShare: number
   sourceStates: string[]
@@ -335,9 +327,6 @@ export interface ConversationSessionSummary {
   reasoningOutputTokens: number
   totalTokens: number
   apiValueUsd: number
-  fastModeAuto: boolean
-  fastModeEffective: boolean
-  fastModeOverride: boolean | null
   sourceState: string
   sourcePath: string | null
   isSubagent: boolean
@@ -359,7 +348,6 @@ export interface ConversationTurnPoint {
   reasoningOutputTokens: number
   totalTokens: number
   valueUsd: number
-  fastModeEffective: boolean
 }
 
 export interface ConversationDetail {

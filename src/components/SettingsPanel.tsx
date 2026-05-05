@@ -9,7 +9,6 @@ import type {
   LiveRateLimitSnapshot,
   MenuBarPopupModuleId,
   OverviewBucket,
-  SubscriptionProfile,
   SubscriptionRecord,
   SubscriptionRecordInput,
   SyncSettings,
@@ -20,14 +19,12 @@ interface SettingsPanelProps {
   language: AppLanguage
   liveRateLimits: LiveRateLimitSnapshot | null
   syncSettings: SyncSettings | null
-  subscriptionProfile: SubscriptionProfile | null
   subscriptionRecords: SubscriptionRecord[]
   accountStatus: CodexAccountStatus | null
   onClose: () => void
   onLanguageChange: (language: AppLanguage) => void
   onSave: (payload: {
     syncSettings: SyncSettings
-    subscriptionProfile: SubscriptionProfile
   }) => Promise<void>
   onSaveSubscriptionRecord: (payload: SubscriptionRecordInput, id?: number | null) => Promise<void>
   onDeleteSubscriptionRecord: (id: number) => Promise<void>
@@ -36,13 +33,14 @@ interface SettingsPanelProps {
 interface SwitchFieldProps {
   label: string
   checked: boolean
+  className?: string
   disabled?: boolean
   onChange: (checked: boolean) => void
 }
 
-function SwitchField({ label, checked, disabled = false, onChange }: SwitchFieldProps) {
+function SwitchField({ label, checked, className = '', disabled = false, onChange }: SwitchFieldProps) {
   return (
-    <label className={`switch-field${disabled ? ' is-disabled' : ''}`}>
+    <label className={`switch-field${disabled ? ' is-disabled' : ''}${className ? ` ${className}` : ''}`}>
       <span>{label}</span>
       <input
         checked={checked}
@@ -96,19 +94,13 @@ function defaultAmountForPlan(planType?: string | null) {
   return SUBSCRIPTION_PLAN_AMOUNTS[normalizePlanOption(planType)]
 }
 
-function createDefaultRecordForm(
-  profile: SubscriptionProfile | null,
-  accountStatus: CodexAccountStatus | null,
-): SubscriptionRecordFormState {
+function createDefaultRecordForm(accountStatus: CodexAccountStatus | null): SubscriptionRecordFormState {
   const serviceStart = todayInputValue()
-  const planType = normalizePlanOption(profile?.planType ?? accountStatus?.planType)
+  const planType = normalizePlanOption(accountStatus?.planType)
   return {
     serviceStart,
     serviceEnd: addOneMonth(serviceStart),
-    amountUsd:
-      profile?.monthlyPrice && profile.monthlyPrice > 0
-        ? profile.monthlyPrice
-        : defaultAmountForPlan(planType),
+    amountUsd: defaultAmountForPlan(planType),
     planType,
     accountEmail: accountStatus?.email ?? '',
   }
@@ -142,8 +134,8 @@ function formatPlanLabel(
 function maskEmail(email: string) {
   const [name, domain] = email.split('@')
   if (!name || !domain) return email
-  const visibleName = name.length <= 2 ? name : `${name.slice(0, 2)}…`
-  return `${visibleName}@${domain}`
+  const visible = name.slice(0, 2)
+  return `${visible}${'•'.repeat(Math.max(2, name.length - visible.length))}@${domain}`
 }
 
 function formatAccountStatus(
@@ -184,7 +176,6 @@ export function SettingsPanel({
   language,
   liveRateLimits,
   syncSettings,
-  subscriptionProfile,
   subscriptionRecords,
   accountStatus,
   onClose,
@@ -195,11 +186,8 @@ export function SettingsPanel({
 }: SettingsPanelProps) {
   const { t } = useI18n()
   const [draftSync, setDraftSync] = useState<SyncSettings | null>(syncSettings)
-  const [draftSubscription, setDraftSubscription] = useState<SubscriptionProfile | null>(
-    subscriptionProfile,
-  )
   const [recordForm, setRecordForm] = useState<SubscriptionRecordFormState>(() =>
-    createDefaultRecordForm(subscriptionProfile, accountStatus),
+    createDefaultRecordForm(accountStatus),
   )
   const [editingRecordId, setEditingRecordId] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
@@ -211,18 +199,16 @@ export function SettingsPanel({
   useEffect(() => {
     const justOpened = isOpen && !wasOpenRef.current
 
-    if (justOpened || (!draftSync && syncSettings) || (!draftSubscription && subscriptionProfile)) {
+    if (justOpened || (!draftSync && syncSettings)) {
       setDraftSync(syncSettings)
-      setDraftSubscription(subscriptionProfile)
-      setRecordForm(createDefaultRecordForm(subscriptionProfile, accountStatus))
+      setRecordForm(createDefaultRecordForm(accountStatus))
       setEditingRecordId(null)
       setSaving(false)
       setSavingRecord(false)
       setDeletingRecordId(null)
     } else if (!isOpen && wasOpenRef.current) {
       setDraftSync(syncSettings)
-      setDraftSubscription(subscriptionProfile)
-      setRecordForm(createDefaultRecordForm(subscriptionProfile, accountStatus))
+      setRecordForm(createDefaultRecordForm(accountStatus))
       setEditingRecordId(null)
       setSaving(false)
       setSavingRecord(false)
@@ -230,16 +216,15 @@ export function SettingsPanel({
     }
 
     wasOpenRef.current = isOpen
-  }, [accountStatus, draftSubscription, draftSync, isOpen, subscriptionProfile, syncSettings])
+  }, [accountStatus, draftSync, isOpen, syncSettings])
 
-  if (!isOpen || !draftSync || !draftSubscription) return null
+  if (!isOpen || !draftSync) return null
 
   const menuBarBucketOptions: Array<{ value: OverviewBucket; label: string }> = [
     { value: 'five_hour', label: t.buckets.five_hour },
     { value: 'day', label: t.buckets.day },
     { value: 'seven_day', label: t.buckets.seven_day },
     { value: 'week', label: t.buckets.week },
-    { value: 'subscription_month', label: t.buckets.subscription_month },
     { value: 'month', label: t.buckets.month },
     { value: 'year', label: t.buckets.year },
     { value: 'total', label: t.buckets.total },
@@ -265,24 +250,6 @@ export function SettingsPanel({
     { value: 'live_quota_freshness', label: t.popup.modules.liveQuotaFreshness },
     { value: 'payoff_ratio', label: t.popup.modules.payoffRatio },
     { value: 'conversation_count', label: t.popup.modules.conversationCount },
-  ]
-
-  const planOptions: Array<{ value: SubscriptionPlanOption; label: string; amountUsd: number }> = [
-    {
-      value: 'plus',
-      label: t.settings.sections.subscription.planPlus,
-      amountUsd: SUBSCRIPTION_PLAN_AMOUNTS.plus,
-    },
-    {
-      value: 'pro_x5',
-      label: t.settings.sections.subscription.planPro5,
-      amountUsd: SUBSCRIPTION_PLAN_AMOUNTS.pro_x5,
-    },
-    {
-      value: 'pro_x10',
-      label: t.settings.sections.subscription.planPro10,
-      amountUsd: SUBSCRIPTION_PLAN_AMOUNTS.pro_x10,
-    },
   ]
 
   function togglePopupModule(moduleId: MenuBarPopupModuleId, enabled: boolean) {
@@ -321,8 +288,28 @@ export function SettingsPanel({
     })
   }
 
+  const planOptions: Array<{ value: SubscriptionPlanOption; label: string; amountUsd: number }> = [
+    {
+      value: 'plus',
+      label: t.settings.sections.subscription.planPlus,
+      amountUsd: SUBSCRIPTION_PLAN_AMOUNTS.plus,
+    },
+    {
+      value: 'pro_x5',
+      label: t.settings.sections.subscription.planPro5,
+      amountUsd: SUBSCRIPTION_PLAN_AMOUNTS.pro_x5,
+    },
+    {
+      value: 'pro_x10',
+      label: t.settings.sections.subscription.planPro10,
+      amountUsd: SUBSCRIPTION_PLAN_AMOUNTS.pro_x10,
+    },
+  ]
+
+  const settingsGroupLabels = t.settings.sections.menuBar.groups
+
   function resetRecordForm() {
-    setRecordForm(createDefaultRecordForm(draftSubscription, accountStatus))
+    setRecordForm(createDefaultRecordForm(accountStatus))
     setEditingRecordId(null)
   }
 
@@ -385,14 +372,12 @@ export function SettingsPanel({
   }
 
   async function handleSubmit() {
-    if (!draftSync || !draftSubscription) return
+    if (!draftSync) return
     setSaving(true)
     try {
       const nextSync = draftSync
-      const nextSubscription = draftSubscription
       await onSave({
         syncSettings: nextSync,
-        subscriptionProfile: nextSubscription,
       })
       onClose()
     } finally {
@@ -444,8 +429,8 @@ export function SettingsPanel({
                 <h4>{t.settings.sections.sync.title}</h4>
               </div>
 
-              <div className="settings-grid">
-                <label className="field">
+              <div className="settings-grid settings-grid--two settings-grid--compact">
+                <label className="field field-span-2">
                   <span>{t.settings.sections.sync.codexHome}</span>
                   <input
                     value={draftSync.codexHome ?? ''}
@@ -520,7 +505,6 @@ export function SettingsPanel({
                     }
                   />
                 </label>
-
               </div>
             </section>
 
@@ -530,7 +514,10 @@ export function SettingsPanel({
                 <h4>{t.settings.sections.menuBar.title}</h4>
               </div>
 
-              <div className="settings-grid">
+              <div className="settings-group-grid">
+                <div className="settings-card-group settings-card-group--span-2">
+                  <span className="settings-group-label">{settingsGroupLabels.display}</span>
+                  <div className="settings-grid settings-grid--four settings-grid--compact">
                 {showDockSettings ? (
                   <SwitchField
                     checked={draftSync.hideDockIconWhenMenuBarVisible}
@@ -593,10 +580,16 @@ export function SettingsPanel({
                   }
                 />
 
+                  </div>
+                </div>
+
+                <div className="settings-card-group">
+                  <span className="settings-group-label">{settingsGroupLabels.valueSource}</span>
+                  <div className="settings-grid settings-grid--compact">
                 <label className="field">
                   <span>{t.settings.sections.menuBar.range}</span>
                   <select
-                    value={draftSync.menuBarBucket}
+                    value={draftSync.menuBarBucket === 'subscription_month' ? 'month' : draftSync.menuBarBucket}
                     onChange={(event) =>
                       setDraftSync((current) =>
                         current
@@ -666,6 +659,12 @@ export function SettingsPanel({
                   </select>
                 </label>
 
+                  </div>
+                </div>
+
+                <div className="settings-card-group">
+                  <span className="settings-group-label">{settingsGroupLabels.pace}</span>
+                  <div className="settings-grid settings-grid--three settings-grid--compact">
                 <SwitchField
                   checked={draftSync.menuBarSpeedShowEmoji}
                   disabled={
@@ -804,6 +803,12 @@ export function SettingsPanel({
                   />
                 </label>
 
+                  </div>
+                </div>
+
+                <div className="settings-card-group settings-card-group--span-2">
+                  <span className="settings-group-label">{settingsGroupLabels.popup}</span>
+                  <div className="settings-grid settings-grid--two settings-grid--compact">
                 <SwitchField
                   checked={draftSync.menuBarPopupEnabled}
                   label={t.settings.sections.menuBar.popupEnabled}
@@ -834,7 +839,7 @@ export function SettingsPanel({
                   }
                 />
 
-                <div className="field popup-module-editor">
+                <div className="field field-span-2 popup-module-editor">
                   <span>{t.settings.sections.menuBar.popupModules}</span>
                   <div className="popup-module-list">
                     {popupModuleOptions.map((option) => {
@@ -880,6 +885,8 @@ export function SettingsPanel({
                     })}
                   </div>
                 </div>
+                  </div>
+                </div>
               </div>
             </section>
 
@@ -887,71 +894,6 @@ export function SettingsPanel({
               <div className="settings-section-head">
                 <p className="eyebrow">{t.settings.sections.subscription.eyebrow}</p>
                 <h4>{t.settings.sections.subscription.title}</h4>
-              </div>
-
-              <div className="settings-grid">
-                <label className="field">
-                  <span>{t.settings.sections.subscription.planType}</span>
-                  <input
-                    value={draftSubscription.planType}
-                    onChange={(event) =>
-                      setDraftSubscription((current) =>
-                        current
-                          ? {
-                              ...current,
-                              planType: event.target.value,
-                            }
-                          : current,
-                      )
-                    }
-                  />
-                </label>
-
-                <label className="field">
-                  <span>{t.settings.sections.subscription.currency}</span>
-                  <input disabled readOnly value={draftSubscription.currency} />
-                </label>
-
-                <label className="field">
-                  <span>{t.settings.sections.subscription.monthlyPrice}</span>
-                  <input
-                    min={0}
-                    step={0.01}
-                    type="number"
-                    value={draftSubscription.monthlyPrice}
-                    onChange={(event) =>
-                      setDraftSubscription((current) =>
-                        current
-                          ? {
-                              ...current,
-                              monthlyPrice: Math.max(0, Number(event.target.value || 0)),
-                            }
-                          : current,
-                      )
-                    }
-                  />
-                </label>
-
-                <label className="field">
-                  <span>{t.settings.sections.subscription.billingAnchorDay}</span>
-                  <input
-                    min={1}
-                    max={28}
-                    step={1}
-                    type="number"
-                    value={draftSubscription.billingAnchorDay}
-                    onChange={(event) =>
-                      setDraftSubscription((current) =>
-                        current
-                          ? {
-                              ...current,
-                              billingAnchorDay: Math.min(28, Math.max(1, Number(event.target.value || 1))),
-                            }
-                          : current,
-                      )
-                    }
-                  />
-                </label>
               </div>
 
               <div className="subscription-account-card">
@@ -971,9 +913,7 @@ export function SettingsPanel({
                         <span className="subscription-record-plan-badge">
                           {formatPlanLabel(record.planType, t.settings.sections.subscription)}
                         </span>
-                        <strong className="subscription-record-amount">
-                          {formatUsd(record.amountUsd, language)}
-                        </strong>
+                        <strong className="subscription-record-amount">{formatUsd(record.amountUsd, language)}</strong>
                         <span className="field-note">
                           {record.serviceStart} → {record.serviceEnd}
                         </span>
@@ -1013,14 +953,10 @@ export function SettingsPanel({
               <div className="subscription-record-editor">
                 <div className="settings-section-head">
                   <p className="eyebrow">
-                    {editingRecordId
-                      ? t.settings.sections.subscription.editRecordTitle
-                      : t.settings.sections.subscription.addRecordTitle}
+                    {editingRecordId ? t.settings.sections.subscription.editRecordTitle : t.settings.sections.subscription.addRecordTitle}
                   </p>
                   <h4>
-                    {editingRecordId
-                      ? t.settings.sections.subscription.updateRecord
-                      : t.settings.sections.subscription.addRecord}
+                    {editingRecordId ? t.settings.sections.subscription.updateRecord : t.settings.sections.subscription.addRecord}
                   </h4>
                 </div>
 
@@ -1038,7 +974,6 @@ export function SettingsPanel({
                       ))}
                     </select>
                   </label>
-
                   <label className="field">
                     <span>{t.settings.sections.subscription.amountUsd}</span>
                     <input
@@ -1051,7 +986,6 @@ export function SettingsPanel({
                       }
                     />
                   </label>
-
                   <label className="field">
                     <span>{t.settings.sections.subscription.accountEmail}</span>
                     <input
@@ -1061,7 +995,6 @@ export function SettingsPanel({
                       onChange={(event) => updateRecordForm({ accountEmail: event.target.value })}
                     />
                   </label>
-
                   <label className="field">
                     <span>{t.settings.sections.subscription.serviceStart}</span>
                     <input
@@ -1070,7 +1003,6 @@ export function SettingsPanel({
                       onChange={(event) => updateRecordServiceStart(event.target.value)}
                     />
                   </label>
-
                   <label className="field">
                     <span>{t.settings.sections.subscription.serviceEnd}</span>
                     <input
@@ -1079,7 +1011,6 @@ export function SettingsPanel({
                       onChange={(event) => updateRecordForm({ serviceEnd: event.target.value })}
                     />
                   </label>
-
                   <div className="subscription-record-form-actions">
                     {editingRecordId ? (
                       <button

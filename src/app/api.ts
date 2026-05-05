@@ -1,5 +1,6 @@
 import { invoke, isTauri } from '@tauri-apps/api/core'
 
+import { todayInputValue } from './format'
 import type {
   CodexAccountStatus,
   CodexSource,
@@ -70,20 +71,8 @@ function createMockSubscriptionRecords(): SubscriptionRecord[] {
   return []
 }
 
-function createMockCodexAccountStatus(): CodexAccountStatus {
-  return {
-    available: false,
-    requiresOpenaiAuth: false,
-    authMode: null,
-    accountType: null,
-    email: null,
-    planType: null,
-    error: null,
-    fetchedAt: nowIso(),
-  }
-}
-
 function createMockCodexSources(): CodexSource[] {
+  const now = nowIso()
   return [
     {
       id: 'local',
@@ -94,17 +83,30 @@ function createMockCodexSources(): CodexSource[] {
       user: null,
       port: null,
       remoteCodexHome: null,
-      localCodexHome: null,
+      localCodexHome: '~/.codex',
       selected: true,
       status: 'ready',
       lastDiscoveredAt: null,
       lastDownloadedAt: null,
       lastScannedAt: null,
       lastError: null,
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
+      createdAt: now,
+      updatedAt: now,
     },
   ]
+}
+
+function createMockCodexAccountStatus(): CodexAccountStatus {
+  return {
+    available: false,
+    requiresOpenaiAuth: false,
+    authMode: null,
+    accountType: null,
+    email: null,
+    planType: null,
+    error: 'Unavailable in browser preview mode.',
+    fetchedAt: nowIso(),
+  }
 }
 
 function createMockLiveRateLimits(): LiveRateLimitSnapshot {
@@ -128,10 +130,6 @@ function localDateExclusiveEndIso(value: string | null | undefined) {
   const date = new Date(`${value ?? fallback}T00:00:00`)
   date.setDate(date.getDate() + 1)
   return date.toISOString()
-}
-
-function todayInputValue() {
-  return new Date().toISOString().slice(0, 10)
 }
 
 function createMockOverview(
@@ -259,6 +257,10 @@ export async function scanCodexUsage(codexHome?: string | null): Promise<import(
   }))
 }
 
+export async function scanCodexSources(sourceIds?: string[] | null): Promise<import('./types').ScanResult[]> {
+  return invokeOrMock('scanCodexSources', { sourceIds: sourceIds ?? null }, () => [])
+}
+
 export async function getScanInProgress() {
   return invokeOrMock('getScanInProgress', {}, () => false)
 }
@@ -272,7 +274,6 @@ export async function getOverview(
   anchor?: string | null,
   customStart?: string | null,
   customEnd?: string | null,
-  sourceIds?: string[] | null,
 ): Promise<OverviewResponse> {
   return invokeOrMock(
     'getOverview',
@@ -282,7 +283,7 @@ export async function getOverview(
       customStart: bucket === 'custom' ? customStart ?? null : null,
       customEnd: bucket === 'custom' ? customEnd ?? null : null,
       liveWindowOffset: null,
-      sourceIds: sourceIds ?? null,
+      sourceIds: null,
     },
     () => createMockOverview(bucket, anchor, customStart, customEnd),
   )
@@ -325,21 +326,8 @@ export async function listConversations(filters: ConversationFilters) {
   return invokeOrMock('listConversations', { filters }, () => [] satisfies ConversationListItem[])
 }
 
-export async function scanCodexSources(sourceIds?: string[] | null): Promise<import('./types').ScanResult[]> {
-  return invokeOrMock('scanCodexSources', { sourceIds: sourceIds ?? null }, () => [
-    {
-      codexHome: '~/.codex',
-      scannedFiles: 0,
-      importedSessions: 0,
-      updatedSessions: 0,
-      missingSessions: 0,
-      lastCompletedAt: nowIso(),
-    },
-  ])
-}
-
 export async function discoverSshCodexSources(): Promise<CodexSourceCandidate[]> {
-  return invokeOrMock('discoverSshCodexSources', {}, () => [])
+  return invokeOrMock('discoverSshCodexSources', {}, () => [] satisfies CodexSourceCandidate[])
 }
 
 export async function listCodexSources(): Promise<CodexSource[]> {
@@ -348,7 +336,7 @@ export async function listCodexSources(): Promise<CodexSource[]> {
 
 export async function upsertCodexSource(payload: CodexSourceInput): Promise<CodexSource> {
   return invokeOrMock('upsertCodexSource', { payload }, () => ({
-    id: `ssh_${payload.sshAlias.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}`,
+    id: payload.sshAlias ? `ssh_${payload.sshAlias}` : `ssh_${Date.now()}`,
     kind: 'ssh',
     label: payload.label,
     sshAlias: payload.sshAlias,
@@ -377,35 +365,30 @@ export async function setCodexSourceSelected(sourceId: string, selected: boolean
 }
 
 export async function deleteCodexSource(sourceId: string): Promise<CodexSource[]> {
-  return invokeOrMock('deleteCodexSource', { sourceId }, createMockCodexSources)
+  return invokeOrMock('deleteCodexSource', { sourceId }, () =>
+    createMockCodexSources().filter((source) => source.id !== sourceId),
+  )
 }
 
 export async function downloadCodexSource(sourceId: string): Promise<CodexSourceDownloadResult> {
-  return invokeOrMock('downloadCodexSource', { sourceId }, () => ({
-    source: {
-      ...createMockCodexSources()[0],
-      id: sourceId,
-      kind: 'ssh',
-      status: 'ready',
-      lastDownloadedAt: nowIso(),
-    },
-    scanResult: {
-      codexHome: '~/.codex',
-      scannedFiles: 0,
-      importedSessions: 0,
-      updatedSessions: 0,
-      missingSessions: 0,
-      lastCompletedAt: nowIso(),
-    },
-  }))
+  return invokeOrMock('downloadCodexSource', { sourceId }, () => {
+    const source = { ...createMockCodexSources()[0], id: sourceId, kind: 'ssh', status: 'ready' }
+    return {
+      source,
+      scanResult: {
+        codexHome: source.localCodexHome ?? '',
+        scannedFiles: 0,
+        importedSessions: 0,
+        updatedSessions: 0,
+        missingSessions: 0,
+        lastCompletedAt: nowIso(),
+      },
+    }
+  })
 }
 
 export async function getLiveRateLimits(): Promise<LiveRateLimitSnapshot> {
   return invokeOrMock('getLiveRateLimits', {}, createMockLiveRateLimits)
-}
-
-export async function getCodexAccountStatus(): Promise<CodexAccountStatus> {
-  return invokeOrMock('getCodexAccountStatus', {}, createMockCodexAccountStatus)
 }
 
 export async function getConversationDetail(
@@ -455,8 +438,8 @@ export async function listSubscriptionRecords() {
 
 export async function createSubscriptionRecord(payload: SubscriptionRecordInput) {
   return invokeOrMock('createSubscriptionRecord', { payload }, () => ({
-    id: Date.now(),
     ...payload,
+    id: -Date.now(),
     createdAt: nowIso(),
     updatedAt: nowIso(),
   }))
@@ -464,8 +447,8 @@ export async function createSubscriptionRecord(payload: SubscriptionRecordInput)
 
 export async function updateSubscriptionRecord(id: number, payload: SubscriptionRecordInput) {
   return invokeOrMock('updateSubscriptionRecord', { id, payload }, () => ({
-    id,
     ...payload,
+    id,
     createdAt: nowIso(),
     updatedAt: nowIso(),
   }))
@@ -473,4 +456,8 @@ export async function updateSubscriptionRecord(id: number, payload: Subscription
 
 export async function deleteSubscriptionRecord(id: number) {
   return invokeOrMock('deleteSubscriptionRecord', { id }, () => true)
+}
+
+export async function getCodexAccountStatus() {
+  return invokeOrMock('getCodexAccountStatus', {}, createMockCodexAccountStatus)
 }

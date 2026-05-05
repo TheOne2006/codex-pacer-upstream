@@ -36,13 +36,14 @@ export function ModelShareChart({
     }))
     .sort((left, right) => right.metric - left.metric)
   const hasRenderableData = chartData.some((item) => item.metric > 0)
+  const fallbackNote = t.charts.valueUnavailableTokenFallback
 
   return (
     <div className="chart-shell chart-shell--secondary">
       <div className="chart-heading chart-heading--distribution">
-        <div className="chart-heading-copy">
+        <div className="chart-heading-copy chart-heading-copy--nowrap">
           <p className="eyebrow">{eyebrow}</p>
-          <h3>{title}</h3>
+          <span className="sr-only">{title}</span>
         </div>
         <div className="chart-controls chart-controls--distribution">
           {onDimensionChange ? (
@@ -80,7 +81,7 @@ export function ModelShareChart({
               <div className="pill-strip pill-strip--mode">
                 <button
                   aria-pressed={mode === 'value'}
-                  className={mode === 'value' ? 'active' : ''}
+                  className={mode === 'value' && !usesTokenFallback ? 'active' : ''}
                   onClick={() => onModeChange('value')}
                   type="button"
                 >
@@ -88,7 +89,7 @@ export function ModelShareChart({
                 </button>
                 <button
                   aria-pressed={mode === 'tokens'}
-                  className={mode === 'tokens' ? 'active' : ''}
+                  className={effectiveMode === 'tokens' ? 'active' : ''}
                   onClick={() => onModeChange('tokens')}
                   type="button"
                 >
@@ -97,7 +98,7 @@ export function ModelShareChart({
               </div>
             </div>
           ) : null}
-          {usesTokenFallback ? <span className="chart-fallback-note">{t.charts.valueUnavailableTokenFallback}</span> : null}
+          {usesTokenFallback ? <span className="chart-fallback-note">{fallbackNote}</span> : null}
         </div>
       </div>
       <div className="share-layout share-layout--solo">

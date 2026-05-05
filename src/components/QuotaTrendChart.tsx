@@ -43,6 +43,14 @@ export function QuotaTrendChart({
       cumulativeApiValueUsd: null,
     }
   })
+  const hasRenderableData = chartData.some((point) => {
+    return (
+      point.remainingPercent !== null ||
+      point.usedPercent !== null ||
+      point.cumulativeApiValueUsd !== null ||
+      point.apiValueUsd !== null
+    )
+  })
 
   return (
     <div className="chart-shell chart-shell--primary">
@@ -68,9 +76,7 @@ export function QuotaTrendChart({
       <p className="chart-note">{note}</p>
       <ResponsiveChart>
         {({ width, height }) =>
-          data.length === 0 ? (
-            <div className="empty-state">{t.charts.noLiveQuotaHistory}</div>
-          ) : (
+          hasRenderableData ? (
             <ComposedChart
               data={chartData}
               height={height}
@@ -151,9 +157,23 @@ export function QuotaTrendChart({
                 activeDot={{ r: 4, fill: '#dceaff' }}
               />
             </ComposedChart>
+          ) : (
+            <div className="chart-empty-state">{t.charts.noLiveQuotaHistory}</div>
           )
         }
       </ResponsiveChart>
+      {hasRenderableData ? (
+        <div className="chart-legend" aria-label={note}>
+          <span className="chart-legend-item chart-legend-item--tokens">
+            <i aria-hidden="true" />
+            {t.charts.remaining}
+          </span>
+          <span className="chart-legend-item chart-legend-item--value">
+            <i aria-hidden="true" />
+            {t.charts.cumulativeValue}
+          </span>
+        </div>
+      ) : null}
     </div>
   )
 }
