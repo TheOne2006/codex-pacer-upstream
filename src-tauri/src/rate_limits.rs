@@ -9,11 +9,12 @@ use chrono::{Local, LocalResult, TimeZone, Timelike};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::models::{LiveRateLimitSnapshot, RateLimitWindowSnapshot};
+use crate::models::{CodexAccountStatus, LiveRateLimitSnapshot, RateLimitWindowSnapshot};
 
 const APP_SERVER_TIMEOUT: Duration = Duration::from_secs(5);
 const INIT_REQUEST_ID: &str = "codex-counter.init";
 const READ_REQUEST_ID: &str = "codex-counter.rate-limits";
+const ACCOUNT_READ_REQUEST_ID: &str = "codex-counter.account-read";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,6 +43,7 @@ struct AppServerRateLimitReadResponse {
 enum AppServerMessage {
   Initialized(Result<(), String>),
   RateLimits(Result<LiveRateLimitSnapshot, String>),
+  Account(Result<CodexAccountStatus, String>),
   Closed,
 }
 
@@ -52,6 +54,35 @@ struct AppServerCommandSpec {
 }
 
 pub fn query_live_rate_limits() -> Result<LiveRateLimitSnapshot, String> {
+  query_app_server(AppServerQuery::RateLimits).and_then(|message| match message {
+    AppServerQueryResult::RateLimits(snapshot) => Ok(snapshot),
+    AppServerQueryResult::Account(_) => {
+      Err("Codex app-server returned account status for a rate-limit query.".to_string())
+    }
+  })
+}
+
+pub fn query_codex_account_status() -> Result<CodexAccountStatus, String> {
+  query_app_server(AppServerQuery::Account).and_then(|message| match message {
+    AppServerQueryResult::Account(status) => Ok(status),
+    AppServerQueryResult::RateLimits(_) => {
+      Err("Codex app-server returned rate limits for an account query.".to_string())
+    }
+  })
+}
+
+#[derive(Clone, Copy)]
+enum AppServerQuery {
+  RateLimits,
+  Account,
+}
+
+enum AppServerQueryResult {
+  RateLimits(LiveRateLimitSnapshot),
+  Account(CodexAccountStatus),
+}
+
+fn query_app_server(query: AppServerQuery) -> Result<AppServerQueryResult, String> {
   let codex_binary = resolve_codex_binary();
   let command_spec = app_server_command_spec(&codex_binary);
   let mut command = app_server_command(&command_spec);
@@ -99,37 +130,49 @@ pub fn query_live_rate_limits() -> Result<LiveRateLimitSnapshot, String> {
         continue;
       }
 
-      if response_id != READ_REQUEST_ID {
+      if response_id != READ_REQUEST_ID && response_id != ACCOUNT_READ_REQUEST_ID {
         continue;
       }
 
       if !init_ok {
-        let _ = sender.send(AppServerMessage::RateLimits(Err(
-          "Codex app-server returned rate limits before initialization completed.".to_string(),
-        )));
+        let error = "Codex app-server returned data before initialization completed.".to_string();
+        let _ = if response_id == ACCOUNT_READ_REQUEST_ID {
+          sender.send(AppServerMessage::Account(Err(error)))
+        } else {
+          sender.send(AppServerMessage::RateLimits(Err(error)))
+        };
         return;
       }
 
       if let Some(error) = parsed.get("error") {
-        let _ = sender.send(AppServerMessage::RateLimits(Err(format!(
-          "Codex app-server rate-limit query failed: {}",
-          json_error_message(error)
-        ))));
+        let message = format!("Codex app-server query failed: {}", json_error_message(error));
+        let _ = if response_id == ACCOUNT_READ_REQUEST_ID {
+          sender.send(AppServerMessage::Account(Err(message)))
+        } else {
+          sender.send(AppServerMessage::RateLimits(Err(message)))
+        };
         return;
       }
 
       let Some(result) = parsed.get("result") else {
-        let _ = sender.send(AppServerMessage::RateLimits(Err(
-          "Codex app-server returned an empty rate-limit response.".to_string(),
-        )));
+        let message = "Codex app-server returned an empty response.".to_string();
+        let _ = if response_id == ACCOUNT_READ_REQUEST_ID {
+          sender.send(AppServerMessage::Account(Err(message)))
+        } else {
+          sender.send(AppServerMessage::RateLimits(Err(message)))
+        };
         return;
       };
 
-      let response = serde_json::from_value::<AppServerRateLimitReadResponse>(result.clone())
-        .map_err(|error| format!("Failed to decode Codex rate-limit response: {error}"));
-      let _ = sender.send(AppServerMessage::RateLimits(
-        response.map(|value| convert_live_rate_limits(value.rate_limits)),
-      ));
+      if response_id == ACCOUNT_READ_REQUEST_ID {
+        let _ = sender.send(AppServerMessage::Account(convert_account_status(result)));
+      } else {
+        let response = serde_json::from_value::<AppServerRateLimitReadResponse>(result.clone())
+          .map_err(|error| format!("Failed to decode Codex rate-limit response: {error}"));
+        let _ = sender.send(AppServerMessage::RateLimits(
+          response.map(|value| convert_live_rate_limits(value.rate_limits)),
+        ));
+      }
       return;
     }
 
@@ -174,7 +217,11 @@ pub fn query_live_rate_limits() -> Result<LiveRateLimitSnapshot, String> {
     }
     AppServerMessage::RateLimits(result) => {
       stop_app_server(&mut child);
-      return result;
+      return result.map(AppServerQueryResult::RateLimits);
+    }
+    AppServerMessage::Account(result) => {
+      stop_app_server(&mut child);
+      return result.map(AppServerQueryResult::Account);
     }
     AppServerMessage::Closed => {
       stop_app_server(&mut child);
@@ -182,15 +229,30 @@ pub fn query_live_rate_limits() -> Result<LiveRateLimitSnapshot, String> {
     }
   }
 
+  let (request_id, method, params, context) = match query {
+    AppServerQuery::RateLimits => (
+      READ_REQUEST_ID,
+      "account/rateLimits/read",
+      Value::Null,
+      "live rate limits",
+    ),
+    AppServerQuery::Account => (
+      ACCOUNT_READ_REQUEST_ID,
+      "account/read",
+      json!({ "refreshToken": false }),
+      "account status",
+    ),
+  };
+
   if let Err(error) = send_app_server_request(
     &mut child,
     json!({
-      "id": READ_REQUEST_ID,
-      "method": "account/rateLimits/read",
-      "params": Value::Null,
+      "id": request_id,
+      "method": method,
+      "params": params,
     }),
-    "Failed to request live rate limits after Codex app-server initialization",
-    "Failed to flush codex app-server rate-limit request",
+    &format!("Failed to request {context} after Codex app-server initialization"),
+    &format!("Failed to flush codex app-server {context} request"),
   ) {
     stop_app_server(&mut child);
     return Err(error);
@@ -201,17 +263,22 @@ pub fn query_live_rate_limits() -> Result<LiveRateLimitSnapshot, String> {
       Ok(message) => message,
       Err(_) => {
         stop_app_server(&mut child);
-        return Err("Timed out while querying live rate limits from Codex.".to_string());
+        return Err(format!("Timed out while querying {context} from Codex."));
       }
     };
 
     match message {
       AppServerMessage::Initialized(Ok(())) => continue,
       AppServerMessage::Initialized(Err(error)) => break Err(error),
-      AppServerMessage::RateLimits(result) => break result,
-      AppServerMessage::Closed => break Err(
-        "Codex app-server closed before returning live rate limits.".to_string(),
-      ),
+      AppServerMessage::RateLimits(result) => match query {
+        AppServerQuery::RateLimits => break result.map(AppServerQueryResult::RateLimits),
+        AppServerQuery::Account => continue,
+      },
+      AppServerMessage::Account(result) => match query {
+        AppServerQuery::Account => break result.map(AppServerQueryResult::Account),
+        AppServerQuery::RateLimits => continue,
+      },
+      AppServerMessage::Closed => break Err(format!("Codex app-server closed before returning {context}.")),
     }
   };
 
@@ -327,6 +394,37 @@ fn convert_live_rate_limits(snapshot: AppServerRateLimitSnapshot) -> LiveRateLim
     secondary: snapshot.secondary.map(convert_window),
     fetched_at: Local::now().to_rfc3339(),
   }
+}
+
+fn convert_account_status(result: &Value) -> Result<CodexAccountStatus, String> {
+  let requires_openai_auth = result
+    .get("requiresOpenaiAuth")
+    .and_then(Value::as_bool)
+    .unwrap_or(false);
+  let account = result.get("account").filter(|value| !value.is_null());
+  let account_type = account
+    .and_then(|value| value.get("type"))
+    .and_then(Value::as_str)
+    .map(str::to_string);
+  let email = account
+    .and_then(|value| value.get("email"))
+    .and_then(Value::as_str)
+    .map(str::to_string);
+  let plan_type = account
+    .and_then(|value| value.get("planType"))
+    .and_then(Value::as_str)
+    .map(str::to_string);
+
+  Ok(CodexAccountStatus {
+    available: true,
+    requires_openai_auth,
+    auth_mode: account_type.clone(),
+    account_type,
+    email,
+    plan_type,
+    error: None,
+    fetched_at: Local::now().to_rfc3339(),
+  })
 }
 
 fn convert_window(window: AppServerRateLimitWindow) -> RateLimitWindowSnapshot {
@@ -445,9 +543,12 @@ fn fallback_codex_binary() -> PathBuf {
 #[cfg(test)]
 mod tests {
   use super::convert_window;
+  #[cfg(windows)]
   use std::ffi::OsString;
+  #[cfg(windows)]
   use std::path::{Path, PathBuf};
 
+  #[cfg(windows)]
   fn existing_paths(paths: &[&str]) -> impl Fn(&Path) -> bool {
     let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
     move |candidate| paths.iter().any(|path| path == candidate)
@@ -466,6 +567,27 @@ mod tests {
     assert_eq!(converted.window_duration_mins, Some(300));
     assert!(converted.resets_at.is_some());
     assert!(converted.window_start.is_some());
+  }
+
+  #[test]
+  fn convert_account_status_extracts_login_fields() {
+    let converted = super::convert_account_status(&serde_json::json!({
+      "requiresOpenaiAuth": false,
+      "account": {
+        "type": "chatgpt",
+        "email": "user@example.com",
+        "planType": "pro"
+      }
+    }))
+    .expect("convert account status");
+
+    assert!(converted.available);
+    assert!(!converted.requires_openai_auth);
+    assert_eq!(converted.account_type.as_deref(), Some("chatgpt"));
+    assert_eq!(converted.auth_mode.as_deref(), Some("chatgpt"));
+    assert_eq!(converted.email.as_deref(), Some("user@example.com"));
+    assert_eq!(converted.plan_type.as_deref(), Some("pro"));
+    assert!(converted.error.is_none());
   }
 
   #[test]

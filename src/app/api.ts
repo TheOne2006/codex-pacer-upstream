@@ -1,6 +1,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core'
 
 import type {
+  CodexAccountStatus,
   CodexSource,
   CodexSourceCandidate,
   CodexSourceDownloadResult,
@@ -67,6 +68,19 @@ function createMockSubscriptionProfile(): SubscriptionProfile {
 
 function createMockSubscriptionRecords(): SubscriptionRecord[] {
   return []
+}
+
+function createMockCodexAccountStatus(): CodexAccountStatus {
+  return {
+    available: false,
+    requiresOpenaiAuth: false,
+    authMode: null,
+    accountType: null,
+    email: null,
+    planType: null,
+    error: null,
+    fetchedAt: nowIso(),
+  }
 }
 
 function createMockCodexSources(): CodexSource[] {
@@ -301,6 +315,7 @@ export async function loadDashboard(
       syncSettings: createMockSyncSettings(),
       subscriptionProfile: createMockSubscriptionProfile(),
       subscriptionRecords: createMockSubscriptionRecords(),
+      accountStatus: createMockCodexAccountStatus(),
       liveRateLimits: createMockLiveRateLimits(),
     }),
   )
@@ -387,6 +402,10 @@ export async function downloadCodexSource(sourceId: string): Promise<CodexSource
 
 export async function getLiveRateLimits(): Promise<LiveRateLimitSnapshot> {
   return invokeOrMock('getLiveRateLimits', {}, createMockLiveRateLimits)
+}
+
+export async function getCodexAccountStatus(): Promise<CodexAccountStatus> {
+  return invokeOrMock('getCodexAccountStatus', {}, createMockCodexAccountStatus)
 }
 
 export async function getConversationDetail(

@@ -5,6 +5,7 @@ import { formatPercent, formatRemainingDuration, formatUsd, todayInputValue } fr
 import { SUPPORTED_LANGUAGES, type AppLanguage } from '../app/i18n'
 import { useI18n } from '../app/useI18n'
 import type {
+  CodexAccountStatus,
   LiveRateLimitSnapshot,
   MenuBarPopupModuleId,
   OverviewBucket,
@@ -21,6 +22,7 @@ interface SettingsPanelProps {
   syncSettings: SyncSettings | null
   subscriptionProfile: SubscriptionProfile | null
   subscriptionRecords: SubscriptionRecord[]
+  accountStatus: CodexAccountStatus | null
   onClose: () => void
   onLanguageChange: (language: AppLanguage) => void
   onSave: (payload: {
@@ -94,9 +96,12 @@ function defaultAmountForPlan(planType?: string | null) {
   return SUBSCRIPTION_PLAN_AMOUNTS[normalizePlanOption(planType)]
 }
 
-function createDefaultRecordForm(profile: SubscriptionProfile | null): SubscriptionRecordFormState {
+function createDefaultRecordForm(
+  profile: SubscriptionProfile | null,
+  accountStatus: CodexAccountStatus | null,
+): SubscriptionRecordFormState {
   const serviceStart = todayInputValue()
-  const planType = normalizePlanOption(profile?.planType)
+  const planType = normalizePlanOption(profile?.planType ?? accountStatus?.planType)
   return {
     serviceStart,
     serviceEnd: addOneMonth(serviceStart),
@@ -105,7 +110,7 @@ function createDefaultRecordForm(profile: SubscriptionProfile | null): Subscript
         ? profile.monthlyPrice
         : defaultAmountForPlan(planType),
     planType,
-    accountEmail: '',
+    accountEmail: accountStatus?.email ?? '',
   }
 }
 
@@ -134,6 +139,34 @@ function formatPlanLabel(
   return labels.planPlus
 }
 
+function maskEmail(email: string) {
+  const [name, domain] = email.split('@')
+  if (!name || !domain) return email
+  const visibleName = name.length <= 2 ? name : `${name.slice(0, 2)}…`
+  return `${visibleName}@${domain}`
+}
+
+function formatAccountStatus(
+  accountStatus: CodexAccountStatus | null,
+  labels: {
+    accountUnavailable: string
+    accountRequiresLogin: string
+    accountApiKey: string
+    accountUnknown: string
+  },
+) {
+  if (!accountStatus) return labels.accountUnavailable
+  if (!accountStatus.available) return accountStatus.error || labels.accountUnavailable
+  if (accountStatus.requiresOpenaiAuth && !accountStatus.accountType) return labels.accountRequiresLogin
+  if (accountStatus.accountType === 'apiKey') return labels.accountApiKey
+  const parts = [
+    accountStatus.accountType ?? labels.accountUnknown,
+    accountStatus.planType,
+    accountStatus.email ? maskEmail(accountStatus.email) : null,
+  ].filter(Boolean)
+  return parts.join(' / ') || labels.accountUnknown
+}
+
 function refreshSecondsToMinutes(seconds: number) {
   return Math.max(1, Math.round(seconds / 60))
 }
@@ -153,6 +186,7 @@ export function SettingsPanel({
   syncSettings,
   subscriptionProfile,
   subscriptionRecords,
+  accountStatus,
   onClose,
   onLanguageChange,
   onSave,
@@ -165,7 +199,7 @@ export function SettingsPanel({
     subscriptionProfile,
   )
   const [recordForm, setRecordForm] = useState<SubscriptionRecordFormState>(() =>
-    createDefaultRecordForm(subscriptionProfile),
+    createDefaultRecordForm(subscriptionProfile, accountStatus),
   )
   const [editingRecordId, setEditingRecordId] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
@@ -180,7 +214,7 @@ export function SettingsPanel({
     if (justOpened || (!draftSync && syncSettings) || (!draftSubscription && subscriptionProfile)) {
       setDraftSync(syncSettings)
       setDraftSubscription(subscriptionProfile)
-      setRecordForm(createDefaultRecordForm(subscriptionProfile))
+      setRecordForm(createDefaultRecordForm(subscriptionProfile, accountStatus))
       setEditingRecordId(null)
       setSaving(false)
       setSavingRecord(false)
@@ -188,7 +222,7 @@ export function SettingsPanel({
     } else if (!isOpen && wasOpenRef.current) {
       setDraftSync(syncSettings)
       setDraftSubscription(subscriptionProfile)
-      setRecordForm(createDefaultRecordForm(subscriptionProfile))
+      setRecordForm(createDefaultRecordForm(subscriptionProfile, accountStatus))
       setEditingRecordId(null)
       setSaving(false)
       setSavingRecord(false)
@@ -196,7 +230,7 @@ export function SettingsPanel({
     }
 
     wasOpenRef.current = isOpen
-  }, [draftSubscription, draftSync, isOpen, subscriptionProfile, syncSettings])
+  }, [accountStatus, draftSubscription, draftSync, isOpen, subscriptionProfile, syncSettings])
 
   if (!isOpen || !draftSync || !draftSubscription) return null
 
@@ -288,7 +322,7 @@ export function SettingsPanel({
   }
 
   function resetRecordForm() {
-    setRecordForm(createDefaultRecordForm(draftSubscription))
+    setRecordForm(createDefaultRecordForm(draftSubscription, accountStatus))
     setEditingRecordId(null)
   }
 
@@ -918,6 +952,11 @@ export function SettingsPanel({
                     }
                   />
                 </label>
+              </div>
+
+              <div className="subscription-account-card">
+                <span className="metric-label">{t.settings.sections.subscription.accountStatus}</span>
+                <strong>{formatAccountStatus(accountStatus, t.settings.sections.subscription)}</strong>
               </div>
 
               <div className="subscription-record-list">

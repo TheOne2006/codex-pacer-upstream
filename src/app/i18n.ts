@@ -282,6 +282,11 @@ export type TranslationSet = {
         monthlyPrice: string
         billingAnchorDay: string
         billingAnchorDayNote: string
+        accountStatus: string
+        accountUnavailable: string
+        accountRequiresLogin: string
+        accountApiKey: string
+        accountUnknown: string
         planPlus: string
         planPro5: string
         planPro10: string
@@ -594,6 +599,11 @@ const translations: Record<AppLanguage, TranslationSet> = {
           monthlyPrice: '月订阅价格',
           billingAnchorDay: '订阅月起始日',
           billingAnchorDayNote: '订阅月会按这个日期切分。例如设置为 23，则统计范围是每月 23 号到次月 22 号。',
+          accountStatus: '当前 Codex 登录',
+          accountUnavailable: '不可用',
+          accountRequiresLogin: '需要登录 OpenAI',
+          accountApiKey: 'API key 模式',
+          accountUnknown: '未知账号',
           planPlus: 'ChatGPT Plus',
           planPro5: 'ChatGPT Pro 5x',
           planPro10: 'ChatGPT Pro 10x',
@@ -899,6 +909,11 @@ const translations: Record<AppLanguage, TranslationSet> = {
           monthlyPrice: 'Monthly subscription price',
           billingAnchorDay: 'Subscription month starts on',
           billingAnchorDayNote: 'The billing month is split by this day. For example, `23` means each window runs from the 23rd to the 22nd of the next month.',
+          accountStatus: 'Current Codex login',
+          accountUnavailable: 'Unavailable',
+          accountRequiresLogin: 'OpenAI login required',
+          accountApiKey: 'API key mode',
+          accountUnknown: 'Unknown account',
           planPlus: 'ChatGPT Plus',
           planPro5: 'ChatGPT Pro 5x',
           planPro10: 'ChatGPT Pro 10x',

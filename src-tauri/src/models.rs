@@ -242,6 +242,34 @@ pub struct SubscriptionRecordInput {
   pub note: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexAccountStatus {
+  pub available: bool,
+  pub requires_openai_auth: bool,
+  pub auth_mode: Option<String>,
+  pub account_type: Option<String>,
+  pub email: Option<String>,
+  pub plan_type: Option<String>,
+  pub error: Option<String>,
+  pub fetched_at: String,
+}
+
+impl CodexAccountStatus {
+  pub fn unavailable(error: String, fetched_at: String) -> Self {
+    Self {
+      available: false,
+      requires_openai_auth: false,
+      auth_mode: None,
+      account_type: None,
+      email: None,
+      plan_type: None,
+      error: Some(error),
+      fetched_at,
+    }
+  }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationFilters {
@@ -422,10 +450,11 @@ pub struct OverviewResponse {
 pub struct DashboardSnapshot {
   pub overview: OverviewResponse,
   pub conversations: Vec<ConversationListItem>,
-    pub codex_sources: Vec<CodexSource>,
+  pub codex_sources: Vec<CodexSource>,
   pub sync_settings: SyncSettings,
   pub subscription_profile: SubscriptionProfile,
   pub subscription_records: Vec<SubscriptionRecord>,
+  pub account_status: CodexAccountStatus,
   pub live_rate_limits: Option<LiveRateLimitSnapshot>,
 }
 

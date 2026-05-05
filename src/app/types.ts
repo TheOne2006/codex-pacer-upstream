@@ -129,6 +129,17 @@ export interface SubscriptionRecordInput {
   note: string | null
 }
 
+export interface CodexAccountStatus {
+  available: boolean
+  requiresOpenaiAuth: boolean
+  authMode: string | null
+  accountType: string | null
+  email: string | null
+  planType: string | null
+  error: string | null
+  fetchedAt: string
+}
+
 export interface ScanResult {
   codexHome: string
   scannedFiles: number
@@ -277,6 +288,7 @@ export interface DashboardSnapshot {
   syncSettings: SyncSettings
   subscriptionProfile: SubscriptionProfile
   subscriptionRecords: SubscriptionRecord[]
+  accountStatus: CodexAccountStatus
   liveRateLimits: LiveRateLimitSnapshot | null
 }
 

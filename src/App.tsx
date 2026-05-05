@@ -47,6 +47,7 @@ import type { TranslationSet } from './app/i18n'
 import { useI18n } from './app/useI18n'
 import type {
   AppView,
+  CodexAccountStatus,
   CodexSource,
   CodexSourceCandidate,
   CodexSourceInput,
@@ -126,6 +127,7 @@ function App() {
   const [deletingSourceIds, setDeletingSourceIds] = useState<Set<string>>(() => new Set())
   const [pendingDeleteSource, setPendingDeleteSource] = useState<CodexSource | null>(null)
   const [subscriptionRecords, setSubscriptionRecords] = useState<SubscriptionRecord[]>([])
+  const [accountStatus, setAccountStatus] = useState<CodexAccountStatus | null>(null)
   const [liveRateLimits, setLiveRateLimits] = useState<LiveRateLimitSnapshot | null>(null)
   const [loadedQueryKey, setLoadedQueryKey] = useState<string | null>(null)
   const [dashboardRevision, setDashboardRevision] = useState(0)
@@ -230,6 +232,7 @@ function App() {
         setSubscriptionProfile(snapshot.subscriptionProfile)
         setCodexSources(snapshot.codexSources)
         setSubscriptionRecords(snapshot.subscriptionRecords)
+        setAccountStatus(snapshot.accountStatus)
         setLiveRateLimits(snapshot.liveRateLimits)
         detailCacheRef.current = nextDetailCache
         setDashboardRevision((current) => current + 1)
@@ -1136,6 +1139,7 @@ function App() {
         onLanguageChange={setLanguage}
         onSave={handleSaveSettings}
         onSaveSubscriptionRecord={handleSaveSubscriptionRecord}
+        accountStatus={accountStatus}
         subscriptionProfile={subscriptionProfile}
         subscriptionRecords={subscriptionRecords}
         syncSettings={syncSettings}

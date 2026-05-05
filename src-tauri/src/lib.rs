@@ -25,7 +25,7 @@ use database::{
 };
 use importer::{perform_scan, perform_scan_for_source, recalculate_all_session_values};
 use models::{
-    CodexSource, CodexSourceCandidate, CodexSourceDownloadResult, CodexSourceInput,
+    CodexAccountStatus, CodexSource, CodexSourceCandidate, CodexSourceDownloadResult, CodexSourceInput,
   ConversationDetail, ConversationFilters, ConversationListItem, DashboardSnapshot,
   LiveRateLimitSnapshot, MenuBarPopupQuotaSnapshot, MenuBarPopupSnapshot,
   MenuBarPopupSuggestedSpeed, OverviewResponse, PricingCatalogEntry, RateLimitWindowSnapshot,
@@ -35,7 +35,7 @@ use pricing::{load_catalog, refresh_pricing_catalog_from_openai, seed_pricing_ca
 use queries::{
     get_conversation_detail, get_overview, get_quota_trend, list_conversations, load_dashboard_data,
 };
-use rate_limits::query_live_rate_limits;
+use rate_limits::{query_codex_account_status, query_live_rate_limits};
 use rusqlite::params;
 use sources::{discover_ssh_codex_sources, download_codex_source, source_cache_codex_home};
 use tauri::{
@@ -247,6 +247,7 @@ async fn loadDashboard(
       sync_settings,
       subscription_profile: snapshot.subscription_profile,
       subscription_records: snapshot.subscription_records,
+      account_status: safe_codex_account_status(),
       live_rate_limits,
     })
   })
@@ -519,6 +520,17 @@ fn updateSubscriptionRecord(
 fn deleteSubscriptionRecord(state: State<'_, AppState>, id: i64) -> Result<bool, String> {
   let conn = open_connection(&state.db_path).map_err(|error| error.to_string())?;
   delete_subscription_record(&conn, id)
+}
+
+#[allow(non_snake_case)]
+#[tauri::command]
+fn getCodexAccountStatus() -> CodexAccountStatus {
+  safe_codex_account_status()
+}
+
+fn safe_codex_account_status() -> CodexAccountStatus {
+  query_codex_account_status()
+    .unwrap_or_else(|error| CodexAccountStatus::unavailable(error, Local::now().to_rfc3339()))
 }
 
 fn run_scan_if_idle(state: AppState, codex_home: Option<String>) -> Result<ScanResult, String> {
@@ -2051,6 +2063,7 @@ pub fn run() {
       createSubscriptionRecord,
       updateSubscriptionRecord,
       deleteSubscriptionRecord,
+      getCodexAccountStatus,
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
