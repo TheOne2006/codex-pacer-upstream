@@ -11,6 +11,8 @@ This release makes Codex Pacer more resilient when Codex app-server is still ini
 - live quota refresh now waits for the Codex app-server `initialize` response before requesting rate limits
 - failed live quota refreshes now try to refresh Codex history and load the latest session-sourced quota sample
 - fallback loading can still use older persisted live samples or memory cache when no session quota sample is available
+- API-equivalent value now uses OpenAI API Standard short-context text-token pricing only
+- Codex fast-mode multipliers were removed from API-equivalent value estimates
 - menu bar popup placement now stays on the display where the menu bar item was clicked when external monitors are attached
 - error paths now distinguish initialization timeout, app-server early close, and rate-limit query failure more clearly
 

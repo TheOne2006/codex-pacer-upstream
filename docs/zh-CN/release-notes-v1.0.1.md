@@ -8,11 +8,12 @@
 
 ## 版本亮点
 
-- 围绕 OpenAI Standard 短上下文 text token 定价刷新 API 等价价值口径
-- 从 API 等价价值计算中移除 Codex fast mode 倍率
-- 会话导入、重新计算、turn 时间线和 token 组成成本拆分统一使用短上下文 API 定价公式
-- 明确 API 等价价值是对比指标，不是 Codex credits 或账单复刻
+- 新增 GPT-5.5 官方价格，用于 API 等价价值估算
+- 为 GPT-5.5 模型族刷新会话导入、重新计算、turn 时间线和 token 组成成本拆分
+- 更新新 GPT-5.4 / GPT-5.5 对话相关设置文案
 - 更新打包文档，说明 GitHub Releases 为什么是版本化签名 DMG 安装包的正式分发入口
+
+> 当前定价说明：新版已移除 Codex fast mode 倍率对 API 等价价值估算的影响。API 等价价值现在只使用 OpenAI API 标准短上下文 text-token 定价。
 
 ## 打包形态
 

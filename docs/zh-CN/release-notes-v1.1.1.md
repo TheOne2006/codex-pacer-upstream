@@ -11,6 +11,8 @@
 - live quota 刷新现在会等待 Codex app-server 的 `initialize` 响应，再请求 rate limits
 - live quota 主动刷新失败时，会尝试刷新 Codex 历史记录，并读取最新的会话来源额度样本
 - 如果没有会话来源额度样本，仍可继续回退到较旧的持久化 live 样本或内存缓存
+- API 等价价值现在只使用 OpenAI API 标准短上下文 text-token 定价
+- 已移除 Codex fast mode 倍率对 API 等价价值估算的影响
 - 外接显示器场景下，菜单栏弹窗现在会保留在点击菜单栏图标所在的屏幕上
 - 错误路径现在能更清楚地区分初始化超时、app-server 提前关闭和 rate-limit 查询失败
 

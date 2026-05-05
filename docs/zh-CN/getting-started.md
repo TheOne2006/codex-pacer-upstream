@@ -68,7 +68,7 @@ npm run dev
 
 ### API 等价价值
 
-Codex Pacer 会使用 OpenAI Standard 短上下文 text token 定价，估算“如果按 API 计费，这些使用量值多少钱”。它是对比信号，不是官方账单；Codex fast mode 或 credits 行为不会改变这个 API 等价价值。
+Codex Pacer 会根据 OpenAI API 标准短上下文 text-token 定价，估算“如果按 API 计费，这些使用量值多少钱”。它是对比信号，不是官方账单，也不会套用 Codex credits 或 fast mode 倍率。
 
 ### 订阅回报
 
