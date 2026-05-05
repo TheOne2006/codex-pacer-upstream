@@ -8,11 +8,10 @@ This is a focused maintenance release for users who want API-equivalent value es
 
 ## Highlights
 
-- added official GPT-5.5 pricing for API-equivalent value estimates
-- added GPT-5.5 Codex fast-mode cost handling with the documented `2.5x` multiplier
-- preserved GPT-5.4 fast-mode valuation at `2x`
-- updated session import, recalculation, turn timelines, and token-composition breakdowns to use the same model-aware fast-mode logic
-- refreshed settings copy for new GPT-5.4 / GPT-5.5 sessions
+- refreshed API-equivalent value around OpenAI Standard short-context text-token pricing
+- removed Codex fast-mode multipliers from API-equivalent value calculations
+- updated session import, recalculation, turn timelines, and token-composition breakdowns to use the same short-context API pricing formula
+- clarified that API-equivalent value is a comparison metric, not a Codex credit or billing reproduction
 - updated packaging docs to explain why GitHub Releases is the canonical distribution point for versioned installers
 
 ## Packaging

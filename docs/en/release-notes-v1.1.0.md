@@ -10,7 +10,7 @@ This release focuses on making the menu bar popup more compact, more visual, and
 
 - added a macOS option to keep Codex Pacer visible in the menu bar while hiding the Dock icon
 - redesigned Settings into a cleaner single-column layout with switch controls for binary preferences
-- updated menu bar defaults for logo, API value, popup, reset timeline, auto scan, refresh intervals, and fast-mode behavior
+- updated menu bar defaults for logo, API value, popup, reset timeline, auto scan, and refresh intervals
 - clarified language labels as `简体中文 · Chinese` and `English · English`
 - replaced the popup's 7-day pacing text with a visual usage line chart, reference line, current point, speed badge, and 7-day API value badge
 - made the popup quota rings and chart blend into the popup background instead of sitting in separate cards

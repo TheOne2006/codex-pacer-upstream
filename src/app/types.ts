@@ -25,7 +25,6 @@ export interface SyncSettings {
   autoScanEnabled: boolean
   autoScanIntervalMinutes: number
   liveQuotaRefreshIntervalSeconds: number
-  defaultFastModeForNewGpt54Sessions: boolean
   hideDockIconWhenMenuBarVisible: boolean
   showMenuBarLogo: boolean
   showMenuBarDailyApiValue: boolean

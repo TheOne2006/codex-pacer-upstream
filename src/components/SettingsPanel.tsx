@@ -307,20 +307,6 @@ export function SettingsPanel({
                   />
                 </label>
 
-                <SwitchField
-                  checked={draftSync.defaultFastModeForNewGpt54Sessions}
-                  label={t.settings.sections.sync.defaultFastModeForNewGpt54Sessions}
-                  onChange={(checked) =>
-                    setDraftSync((current) =>
-                      current
-                        ? {
-                            ...current,
-                            defaultFastModeForNewGpt54Sessions: checked,
-                          }
-                        : current,
-                    )
-                  }
-                />
               </div>
             </section>
 

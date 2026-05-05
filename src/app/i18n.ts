@@ -186,8 +186,6 @@ export type TranslationSet = {
         autoScanIntervalMinutes: string
         liveQuotaRefreshIntervalSeconds: string
         liveQuotaRefreshNote: string
-        defaultFastModeForNewGpt54Sessions: string
-        defaultFastModeForNewGpt54SessionsNote: string
       }
       menuBar: {
         eyebrow: string
@@ -298,7 +296,7 @@ const translations: Record<AppLanguage, TranslationSet> = {
       scannedFiles: (files, sessions) => `已扫描 ${files} 个文件，刷新 ${sessions} 个会话。`,
       backgroundScanAlreadyRunning: '后台扫描已在进行中，正在刷新本地快照。',
       failedToLoad: (bucketLabel, error) => `加载${bucketLabel}失败：${error}`,
-      pricingRefreshed: '已按内置官方映射刷新定价目录。',
+      pricingRefreshed: '已按 OpenAI 标准短上下文定价刷新目录。',
       settingsSaved: '设置已保存。',
       waitingLiveQuota: '等待 live quota',
     },
@@ -321,7 +319,7 @@ const translations: Record<AppLanguage, TranslationSet> = {
       historicalSevenDayWindow: '历史 7 天额度窗口',
     },
     metrics: {
-      apiValue: 'API 等价价值',
+      apiValue: 'API 等价价值（标准短上下文）',
       wastedQuota: '浪费额度',
       remainingQuota: '剩余额度',
       peakUsed: (value) => `峰值已用 ${value}`,
@@ -437,9 +435,6 @@ const translations: Record<AppLanguage, TranslationSet> = {
           autoScanIntervalMinutes: '自动扫描间隔（分钟）',
           liveQuotaRefreshIntervalSeconds: 'Live quota 刷新间隔（分钟）',
           liveQuotaRefreshNote: '独立控制 `5小时 / 7天` live quota 的主动刷新与历史持久化频率。',
-          defaultFastModeForNewGpt54Sessions: '新 gpt-5.4 / gpt-5.5 对话默认按快速模式计费',
-          defaultFastModeForNewGpt54SessionsNote:
-            '仅影响新导入、且原始 session 未显式写入 `fast_mode/quick_mode` 的 gpt-5.4 / gpt-5.5 对话；不会改动已有对话。',
         },
         menuBar: {
           eyebrow: '托盘',
@@ -543,7 +538,7 @@ const translations: Record<AppLanguage, TranslationSet> = {
       scannedFiles: (files, sessions) => `Scanned ${files} files, refreshed ${sessions} sessions.`,
       backgroundScanAlreadyRunning: 'Background scan is already running. Refreshing local snapshots.',
       failedToLoad: (bucketLabel, error) => `Failed to load ${bucketLabel}: ${error}`,
-      pricingRefreshed: 'Pricing catalog refreshed from built-in official mappings.',
+      pricingRefreshed: 'Pricing catalog refreshed from OpenAI Standard short-context pricing.',
       settingsSaved: 'Settings saved.',
       waitingLiveQuota: 'Waiting for live quota',
     },
@@ -566,7 +561,7 @@ const translations: Record<AppLanguage, TranslationSet> = {
       historicalSevenDayWindow: 'Historical 7-day quota window',
     },
     metrics: {
-      apiValue: 'API value',
+      apiValue: 'API value (Std short ctx)',
       wastedQuota: 'Wasted quota',
       remainingQuota: 'Remaining quota',
       peakUsed: (value) => `Peak used ${value}`,
@@ -682,9 +677,6 @@ const translations: Record<AppLanguage, TranslationSet> = {
           autoScanIntervalMinutes: 'Auto scan interval (minutes)',
           liveQuotaRefreshIntervalSeconds: 'Live quota refresh interval (minutes)',
           liveQuotaRefreshNote: 'Separately controls active refresh and history persistence for `5h / 7d` live quota snapshots.',
-          defaultFastModeForNewGpt54Sessions: 'Default new gpt-5.4 / gpt-5.5 sessions to fast-mode billing',
-          defaultFastModeForNewGpt54SessionsNote:
-            'Only affects newly imported gpt-5.4 / gpt-5.5 sessions when the raw session does not explicitly contain `fast_mode/quick_mode`; existing sessions are unchanged.',
         },
         menuBar: {
           eyebrow: 'Tray',

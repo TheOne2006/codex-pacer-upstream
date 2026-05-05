@@ -8,11 +8,10 @@
 
 ## 版本亮点
 
-- 新增 GPT-5.5 官方价格，用于 API 等价价值估算
-- 新增 GPT-5.5 Codex fast mode 成本处理，使用官方说明中的 `2.5x` 倍率
-- 保持 GPT-5.4 fast mode 的 `2x` 计价逻辑
-- 会话导入、重新计算、turn 时间线和 token 组成成本拆分统一使用按模型区分的 fast-mode 逻辑
-- 更新新 GPT-5.4 / GPT-5.5 对话的默认 fast-mode 设置文案
+- 围绕 OpenAI Standard 短上下文 text token 定价刷新 API 等价价值口径
+- 从 API 等价价值计算中移除 Codex fast mode 倍率
+- 会话导入、重新计算、turn 时间线和 token 组成成本拆分统一使用短上下文 API 定价公式
+- 明确 API 等价价值是对比指标，不是 Codex credits 或账单复刻
 - 更新打包文档，说明 GitHub Releases 为什么是版本化签名 DMG 安装包的正式分发入口
 
 ## 打包形态

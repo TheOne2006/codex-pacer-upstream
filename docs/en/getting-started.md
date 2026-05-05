@@ -68,7 +68,7 @@ Use this for UI work only. Tauri-only features are limited or mocked in browser 
 
 ### API-equivalent value
 
-Codex Pacer estimates what your token usage would have cost under API pricing mappings. It is a comparative signal, not a billing invoice.
+Codex Pacer estimates what your token usage would have cost using OpenAI Standard short-context text-token pricing. It is a comparative signal, not a billing invoice, and Codex fast-mode or credit behavior does not change the API-equivalent value.
 
 ### Subscription payoff
 

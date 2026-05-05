@@ -17,17 +17,16 @@ use chrono::{DateTime, Duration as ChronoDuration, Local};
 use rusqlite::params;
 use database::{
   canonical_subscription_currency, get_subscription_profile, get_sync_settings, init_db,
-  insert_live_rate_limit_snapshot, open_connection, save_fast_mode_override,
-  save_subscription_profile, save_sync_settings,
+  insert_live_rate_limit_snapshot, open_connection, save_subscription_profile, save_sync_settings,
 };
-use importer::{perform_scan, recalculate_all_session_values, recalculate_session_values};
+use importer::{perform_scan, recalculate_all_session_values};
 use models::{
   ConversationDetail, ConversationFilters, ConversationListItem, DashboardSnapshot,
   LiveRateLimitSnapshot, MenuBarPopupQuotaSnapshot, MenuBarPopupSnapshot,
   MenuBarPopupSuggestedSpeed, OverviewResponse, PricingCatalogEntry, RateLimitWindowSnapshot,
   ScanResult, SubscriptionProfile, SyncSettings,
 };
-use pricing::{load_catalog, seed_pricing_catalog};
+use pricing::{load_catalog, refresh_pricing_catalog_from_openai, seed_pricing_catalog};
 use queries::{get_conversation_detail, get_overview, get_quota_trend, list_conversations, load_dashboard_data};
 use rate_limits::query_live_rate_limits;
 use tauri::{
@@ -89,7 +88,7 @@ fn getScanInProgress(state: State<'_, AppState>) -> bool {
 #[tauri::command]
 fn refreshPricing(state: State<'_, AppState>) -> Result<Vec<PricingCatalogEntry>, String> {
   let conn = open_connection(&state.db_path).map_err(|error| error.to_string())?;
-  seed_pricing_catalog(&conn).map_err(|error| error.to_string())?;
+  refresh_pricing_catalog_from_openai(&conn)?;
   recalculate_all_session_values(&conn).map_err(|error| error.to_string())?;
   let catalog = load_catalog(&conn).map_err(|error| error.to_string())?;
   refresh_daily_value_menu_bar(state.inner());
@@ -256,19 +255,6 @@ fn handleMenuBarPopupAction(
 }
 
 #[allow(non_snake_case)]
-#[tauri::command(rename_all = "camelCase")]
-fn setFastModeOverride(
-  state: State<'_, AppState>,
-  session_id: String,
-  override_value: Option<bool>,
-) -> Result<bool, String> {
-  let conn = open_connection(&state.db_path).map_err(|error| error.to_string())?;
-  save_fast_mode_override(&conn, &session_id, override_value).map_err(|error| error.to_string())?;
-  recalculate_session_values(&conn, &session_id).map_err(|error| error.to_string())?;
-  Ok(true)
-}
-
-#[allow(non_snake_case)]
 #[tauri::command]
 fn getSyncSettings(state: State<'_, AppState>) -> Result<SyncSettings, String> {
   let conn = open_connection(&state.db_path).map_err(|error| error.to_string())?;
@@ -289,7 +275,6 @@ fn updateSyncSettings(
     auto_scan_enabled: payload.auto_scan_enabled,
     auto_scan_interval_minutes: payload.auto_scan_interval_minutes.max(1),
     live_quota_refresh_interval_seconds: payload.live_quota_refresh_interval_seconds.clamp(60, 3600),
-    default_fast_mode_for_new_gpt54_sessions: payload.default_fast_mode_for_new_gpt54_sessions,
     hide_dock_icon_when_menu_bar_visible: payload.hide_dock_icon_when_menu_bar_visible,
     show_menu_bar_logo: payload.show_menu_bar_logo,
     show_menu_bar_daily_api_value: payload.show_menu_bar_daily_api_value,
@@ -1680,7 +1665,6 @@ pub fn run() {
       loadDashboard,
       getConversationDetail,
       handleMenuBarPopupAction,
-      setFastModeOverride,
       getSyncSettings,
       updateSyncSettings,
       getSubscriptionProfile,

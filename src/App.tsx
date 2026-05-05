@@ -768,7 +768,6 @@ function App() {
                               {modelId}
                             </span>
                           ))}
-                          {conversation.hasFastMode ? <span className="badge fast">{t.common.fast}</span> : null}
                         </div>
                         <div className="token-row">
                           <span>
@@ -878,9 +877,6 @@ function App() {
                                   </span>
                                   <span className="timeline-pill">{sessionLabel}</span>
                                   <span className="timeline-pill">{modelSummary}</span>
-                                  {turn.fastModeEffective ? (
-                                    <span className="timeline-pill timeline-pill-fast">{t.common.fast}</span>
-                                  ) : null}
                                   {statusLabel ? <span className="timeline-pill">{statusLabel}</span> : null}
                                 </div>
                               </article>
