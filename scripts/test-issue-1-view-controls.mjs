@@ -6,6 +6,7 @@ import assert from 'node:assert/strict'
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const chartSource = readFileSync(join(repoRoot, 'src/components/ModelShareChart.tsx'), 'utf8')
 const cssSource = readFileSync(join(repoRoot, 'src/styles.css'), 'utf8')
+const metricCardSource = readFileSync(join(repoRoot, 'src/shared/ui/MetricCards.tsx'), 'utf8')
 
 assert.match(
   chartSource,
@@ -86,7 +87,7 @@ assert.match(
 )
 
 assert.match(
-  chartSource + readFileSync(join(repoRoot, 'src/App.tsx'), 'utf8'),
+  chartSource + readFileSync(join(repoRoot, 'src/App.tsx'), 'utf8') + metricCardSource,
   /<strong[^>]*aria-label=\{value\}[^>]*title=\{value\}/,
   'metric values should expose the full value to assistive technology as well as hover',
 )

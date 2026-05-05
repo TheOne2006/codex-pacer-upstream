@@ -27,23 +27,27 @@ export function ModelShareChart({
   const { language, t } = useI18n()
   const totalValue = data.reduce((sum, item) => sum + item.apiValueUsd, 0)
   const totalTokens = data.reduce((sum, item) => sum + item.totalTokens, 0)
-  const chartData = data.map((item) => ({
-    ...item,
-    metric: mode === 'value' ? item.apiValueUsd : item.totalTokens,
-  }))
+  const usesTokenFallback = mode === 'value' && totalValue <= 0 && totalTokens > 0
+  const effectiveMode = usesTokenFallback ? 'tokens' : mode
+  const chartData = data
+    .map((item) => ({
+      ...item,
+      metric: effectiveMode === 'value' ? item.apiValueUsd : item.totalTokens,
+    }))
+    .sort((left, right) => right.metric - left.metric)
   const hasRenderableData = chartData.some((item) => item.metric > 0)
 
   return (
     <div className="chart-shell chart-shell--secondary">
-      <div className="chart-heading">
-        <div>
+      <div className="chart-heading chart-heading--distribution">
+        <div className="chart-heading-copy">
           <p className="eyebrow">{eyebrow}</p>
           <h3>{title}</h3>
         </div>
-        <div className="chart-controls">
+        <div className="chart-controls chart-controls--distribution">
           {onDimensionChange ? (
             <div className="chart-control-group" role="group" aria-label={t.charts.dimensionControlLabel}>
-              <div className="pill-strip">
+              <div className="pill-strip pill-strip--dimension">
                 <button
                   aria-pressed={dimension === 'model'}
                   className={dimension === 'model' ? 'active' : ''}
@@ -73,7 +77,7 @@ export function ModelShareChart({
           ) : null}
           {onModeChange ? (
             <div className="chart-control-group" role="group" aria-label={t.charts.metricControlLabel}>
-              <div className="pill-strip">
+              <div className="pill-strip pill-strip--mode">
                 <button
                   aria-pressed={mode === 'value'}
                   className={mode === 'value' ? 'active' : ''}
@@ -93,10 +97,11 @@ export function ModelShareChart({
               </div>
             </div>
           ) : null}
+          {usesTokenFallback ? <span className="chart-fallback-note">{t.charts.valueUnavailableTokenFallback}</span> : null}
         </div>
       </div>
       <div className="share-layout share-layout--solo">
-        <div className="share-chart">
+        <div className={`share-chart ${hasRenderableData ? '' : 'share-chart--empty'}`}>
           {hasRenderableData ? (
             <ResponsiveChart className="share-chart-canvas" minHeight={320}>
               {({ width, height }) => (
@@ -108,7 +113,7 @@ export function ModelShareChart({
                       border: '1px solid rgba(148, 163, 184, 0.18)',
                     }}
                     formatter={(value) =>
-                      mode === 'value'
+                      effectiveMode === 'value'
                         ? formatUsd(coerceMetricValue(value), language)
                         : formatTokenCount(coerceMetricValue(value), language)
                     }
@@ -136,13 +141,13 @@ export function ModelShareChart({
               )}
             </ResponsiveChart>
           ) : (
-            <div className="share-empty">{t.charts.noShareData}</div>
+            <div className="chart-empty-state share-empty">{t.charts.noShareData}</div>
           )}
           {hasRenderableData ? (
             <div className="share-center">
-              <span>{mode === 'value' ? t.charts.apiValue : t.charts.tokens}</span>
+              <span>{effectiveMode === 'value' ? t.charts.apiValue : t.charts.tokens}</span>
               <strong>
-                {mode === 'value'
+                {effectiveMode === 'value'
                   ? formatUsd(totalValue, language)
                   : formatTokenCount(totalTokens, language)}
               </strong>

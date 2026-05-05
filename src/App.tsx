@@ -81,6 +81,8 @@ import {
   SourceSelectorPanel,
   upsertSourceInList,
 } from './features/sources'
+import { isErrorLikeStatus } from './shared/lib/status'
+import { MetricCard, MiniCard } from './shared/ui/MetricCards'
 
 const MENU_BAR_POPUP_WINDOW_LABEL = 'menu-bar-popup'
 const MENU_BAR_POPUP_REFRESH_EVENT = 'codex-counter://menu-bar-popup-refresh'
@@ -637,7 +639,7 @@ function App() {
             ? t.bucketDescriptions.historicalSevenDayWindow
             : t.bucketDescriptions.currentSevenDayWindow
       : t.buckets[bucket]
-  const shouldShowStatusNotice = /error|invalid|unsupported|failed/i.test(statusMessage)
+  const shouldShowStatusNotice = isErrorLikeStatus(statusMessage)
   const shouldShowLoadingNotice =
     isBusy && !shouldShowStatusNotice && isLiveBucket && liveWindowOffset === 0
   const resolvedBucket = bucket
@@ -1174,53 +1176,6 @@ function App() {
         onConfirm={confirmDeleteSource}
         source={pendingDeleteSource}
       />
-    </div>
-  )
-}
-
-interface MetricCardProps {
-  caption: string
-  value: string
-  note?: string
-  compact?: boolean
-  tone?: 'primary' | 'secondary' | 'accent' | 'neutral'
-  featured?: boolean
-}
-
-interface MiniCardProps {
-  label: string
-  value: string
-  tone?: 'primary' | 'secondary' | 'accent'
-}
-
-function MetricCard({
-  caption,
-  value,
-  note,
-  compact = false,
-  tone = 'neutral',
-  featured = false,
-}: MetricCardProps) {
-  return (
-    <section
-      className={`metric-card metric-card--${tone} ${compact ? 'metric-card--compact' : ''} ${
-        featured ? 'metric-card--featured' : ''
-      }`}
-    >
-      <span className="metric-label">{caption}</span>
-      <strong aria-label={value} title={value}>
-        {value}
-      </strong>
-      {note ? <span className="stat-caption">{note}</span> : null}
-    </section>
-  )
-}
-
-function MiniCard({ label, value, tone = 'secondary' }: MiniCardProps) {
-  return (
-    <div className={`detail-mini-card detail-mini-card--${tone}`}>
-      <span className="metric-label">{label}</span>
-      <strong>{value}</strong>
     </div>
   )
 }

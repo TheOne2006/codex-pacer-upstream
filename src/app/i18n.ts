@@ -124,6 +124,7 @@ export type TranslationSet = {
     apiValue: string
     tokens: string
     noShareData: string
+    valueUnavailableTokenFallback: string
     dimensionControlLabel: string
     metricControlLabel: string
     byModel: string
@@ -445,6 +446,7 @@ const translations: Record<AppLanguage, TranslationSet> = {
       apiValue: 'API 价值',
       tokens: 'Tokens',
       noShareData: '当前窗口没有可用占比数据。',
+      valueUnavailableTokenFallback: '暂无可用 API 价值，已按 tokens 显示占比。',
       dimensionControlLabel: '分布维度',
       metricControlLabel: '分布指标',
       byModel: '按模型',
@@ -759,6 +761,7 @@ const translations: Record<AppLanguage, TranslationSet> = {
       apiValue: 'API value',
       tokens: 'Tokens',
       noShareData: 'No share data in this window.',
+      valueUnavailableTokenFallback: 'API value is unavailable, showing token share instead.',
       dimensionControlLabel: 'Distribution dimension',
       metricControlLabel: 'Distribution metric',
       byModel: 'By model',
