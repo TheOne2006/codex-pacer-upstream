@@ -9,6 +9,8 @@ use crate::models::{PricingCatalogEntry, TokenUsage};
 pub const OPENAI_API_PRICING_URL: &str = "https://developers.openai.com/api/docs/pricing";
 const FALLBACK_PRICING_NOTE: &str =
     "Bundled fallback for OpenAI Standard short-context API pricing.";
+const ASTRO_ISLAND_END_TAG: &str = "</astro-island>";
+const CONTENT_SWITCHER_PANE_MARKER: &str = "data-content-switcher-pane=\"true\" data-value=\"";
 
 #[derive(Debug, Clone)]
 pub struct ResolvedPricing {
@@ -233,20 +235,35 @@ fn pricing_component_blocks(document: &str) -> Vec<&str> {
     let mut cursor = 0usize;
     while let Some(relative_start) = document[cursor..].find("<astro-island") {
         let start = cursor + relative_start;
-        let Some(relative_end) = document[start..].find("</astro-island>") else {
+        let Some(relative_end) = document[start..].find(ASTRO_ISLAND_END_TAG) else {
             break;
         };
         let end = start + relative_end;
         let block = &document[start..end];
         let is_standard_text_table = block.contains("TextTokenPricingTables")
             && block.contains("&quot;tier&quot;:[0,&quot;standard&quot;]");
-        let is_grouped_pricing_table = block.contains("GroupedPricingTable");
-        if is_standard_text_table || is_grouped_pricing_table {
+        let is_standard_grouped_pricing_table = block.contains("GroupedPricingTable")
+            && is_standard_grouped_pricing_pane(document, start);
+        if is_standard_text_table || is_standard_grouped_pricing_table {
             blocks.push(block);
         }
-        cursor = end + "</astro-island>".len();
+        cursor = end + ASTRO_ISLAND_END_TAG.len();
     }
     blocks
+}
+
+fn is_standard_grouped_pricing_pane(document: &str, block_start: usize) -> bool {
+    nearest_content_switcher_pane_value(document, block_start)
+        .map(|value| value == "standard")
+        .unwrap_or(true)
+}
+
+fn nearest_content_switcher_pane_value(document: &str, block_start: usize) -> Option<&str> {
+    let prefix = document.get(..block_start)?;
+    let marker_start = prefix.rfind(CONTENT_SWITCHER_PANE_MARKER)?;
+    let value_start = marker_start + CONTENT_SWITCHER_PANE_MARKER.len();
+    let value_end = value_start + document.get(value_start..)?.find('"')?;
+    document.get(value_start..value_end)
 }
 
 fn extract_pricing_rows(block: &str) -> Vec<OfficialPricingRow> {
@@ -261,6 +278,10 @@ fn extract_pricing_rows(block: &str) -> Vec<OfficialPricingRow> {
         };
         let name_end = name_start + relative_name_end;
         let raw_name = html_unescape(&block[name_start..name_end]);
+        if !is_standard_short_context_pricing_row(&raw_name) {
+            cursor = name_end;
+            continue;
+        }
         let mut value_cursor = name_end + "&quot;]".len();
 
         let input = parse_next_pricing_value(block, &mut value_cursor).flatten();
@@ -283,6 +304,11 @@ fn extract_pricing_rows(block: &str) -> Vec<OfficialPricingRow> {
     }
 
     rows
+}
+
+fn is_standard_short_context_pricing_row(raw_name: &str) -> bool {
+    let normalized = raw_name.to_ascii_lowercase().replace(' ', "");
+    !normalized.contains(">=272k") && !normalized.contains(">272k")
 }
 
 fn parse_next_pricing_value(source: &str, cursor: &mut usize) -> Option<Option<f64>> {
@@ -690,6 +716,31 @@ mod tests {
         assert_eq!(gpt55.cached_input_price_per_million, 0.5);
         assert_eq!(gpt55.output_price_per_million, 30.0);
         assert!(gpt55.is_official);
+
+        let codex = catalog.get("gpt-5.3-codex").expect("gpt-5.3-codex");
+        assert_eq!(codex.input_price_per_million, 1.75);
+        assert_eq!(codex.cached_input_price_per_million, 0.175);
+        assert_eq!(codex.output_price_per_million, 14.0);
+    }
+
+    #[test]
+    fn prefers_standard_short_context_when_pricing_blocks_are_reordered() {
+        let html = concat!(
+            "<astro-island component-export=\"TextTokenPricingTables\" props=\"{&quot;tier&quot;:[0,&quot;standard&quot;],&quot;rows&quot;:[1,[[1,[[0,&quot;gpt-5.5 (&gt;=272K context length)&quot;],[0,10],[0,1],[0,45]]],[1,[[0,&quot;gpt-5.5 (&lt;272K context length)&quot;],[0,5],[0,0.5],[0,30]]],[1,[[0,&quot;gpt-5.4 (&lt;272K context length)&quot;],[0,2.5],[0,0.25],[0,15]]],[1,[[0,&quot;gpt-5.4-mini&quot;],[0,0.75],[0,0.075],[0,4.5]]],[1,[[0,&quot;gpt-5.4-nano&quot;],[0,0.2],[0,0.02],[0,1.25]]]]]}\"></astro-island>",
+            "<div data-content-switcher-pane=\"true\" data-value=\"priority\" hidden><div class=\"hidden\">Priority</div><astro-island component-export=\"GroupedPricingTable\" props=\"{&quot;groups&quot;:[1,[[0,{&quot;model&quot;:[0,&quot;Codex&quot;],&quot;rows&quot;:[1,[[1,[[0,&quot;gpt-5.3-codex&quot;],[0,3.5],[0,0.35],[0,28]]]]]}]]]}\"></astro-island></div>",
+            "<div data-content-switcher-pane=\"true\" data-value=\"standard\"><div class=\"hidden\">Standard</div><astro-island component-export=\"GroupedPricingTable\" props=\"{&quot;groups&quot;:[1,[[0,{&quot;model&quot;:[0,&quot;Codex&quot;],&quot;rows&quot;:[1,[[1,[[0,&quot;gpt-5.3-codex&quot;],[0,1.75],[0,0.175],[0,14]]]]]}]]]}\"></astro-island></div>"
+        );
+
+        let entries = parse_official_pricing_catalog(html).expect("parse official pricing");
+        let catalog = entries
+            .into_iter()
+            .map(|entry| (entry.model_id.clone(), entry))
+            .collect::<HashMap<_, _>>();
+
+        let gpt55 = catalog.get("gpt-5.5").expect("gpt-5.5");
+        assert_eq!(gpt55.input_price_per_million, 5.0);
+        assert_eq!(gpt55.cached_input_price_per_million, 0.5);
+        assert_eq!(gpt55.output_price_per_million, 30.0);
 
         let codex = catalog.get("gpt-5.3-codex").expect("gpt-5.3-codex");
         assert_eq!(codex.input_price_per_million, 1.75);
