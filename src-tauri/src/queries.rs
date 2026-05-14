@@ -10,9 +10,7 @@ use chrono::{
 use rusqlite::Connection;
 use serde_json::Value;
 
-use crate::database::{
-    get_subscription_profile, list_codex_sources, list_subscription_records, open_connection,
-};
+use crate::database::{list_codex_sources, list_subscription_records, open_connection};
 use crate::models::{
     CompositionShare, ConversationDetail, ConversationFilters, ConversationListItem,
     ConversationSessionSummary, ConversationTurnPoint, LiveRateLimitSnapshot, ModelShare,
@@ -116,7 +114,6 @@ pub fn get_overview(
     let conn = open_connection(db_path).map_err(|error| error.to_string())?;
     let sessions = load_sessions(&conn).map_err(|error| error.to_string())?;
     let events = load_events(&conn).map_err(|error| error.to_string())?;
-    let profile = get_subscription_profile(&conn).map_err(|error| error.to_string())?;
     let subscription_records =
         list_subscription_records(&conn).map_err(|error| error.to_string())?;
     let catalog = load_catalog_map(&conn).map_err(|error| error.to_string())?;
@@ -130,7 +127,6 @@ pub fn get_overview(
         anchor,
         custom_start,
         custom_end,
-        profile.billing_anchor_day,
         live_rate_limits,
         live_window_offset,
         source_ids.as_deref(),
@@ -144,7 +140,6 @@ pub fn get_quota_trend(
 ) -> Result<Vec<QuotaTrendPoint>, String> {
     let conn = open_connection(db_path).map_err(|error| error.to_string())?;
     let events = load_events(&conn).map_err(|error| error.to_string())?;
-    let profile = get_subscription_profile(&conn).map_err(|error| error.to_string())?;
     let resolved_window = resolve_window(
         &conn,
         Some(bucket),
@@ -152,7 +147,6 @@ pub fn get_quota_trend(
         None,
         None,
         &events,
-        profile.billing_anchor_day,
         live_rate_limits.as_ref(),
         None,
     )?;
@@ -179,7 +173,6 @@ pub fn list_conversations(
     let conn = open_connection(db_path).map_err(|error| error.to_string())?;
     let sessions = load_sessions(&conn).map_err(|error| error.to_string())?;
     let events = load_events(&conn).map_err(|error| error.to_string())?;
-    let profile = get_subscription_profile(&conn).map_err(|error| error.to_string())?;
     let subscription_records =
         list_subscription_records(&conn).map_err(|error| error.to_string())?;
     build_conversation_list(
@@ -188,7 +181,6 @@ pub fn list_conversations(
         &events,
         &subscription_records,
         filters,
-        profile.billing_anchor_day,
         live_rate_limits.as_ref(),
     )
 }
@@ -207,7 +199,6 @@ pub fn load_dashboard_data(
     let conn = open_connection(db_path).map_err(|error| error.to_string())?;
     let sessions = load_sessions(&conn).map_err(|error| error.to_string())?;
     let events = load_events(&conn).map_err(|error| error.to_string())?;
-    let profile = get_subscription_profile(&conn).map_err(|error| error.to_string())?;
     let subscription_records =
         list_subscription_records(&conn).map_err(|error| error.to_string())?;
     let catalog = load_catalog_map(&conn).map_err(|error| error.to_string())?;
@@ -222,7 +213,6 @@ pub fn load_dashboard_data(
         anchor.clone(),
         custom_start.clone(),
         custom_end.clone(),
-        profile.billing_anchor_day,
         live_rate_limits.clone(),
         live_window_offset,
         source_ids.as_deref(),
@@ -241,7 +231,6 @@ pub fn load_dashboard_data(
             live_window_offset,
             source_ids,
         }),
-        profile.billing_anchor_day,
         live_rate_limits.as_ref(),
     )?;
 
@@ -262,7 +251,6 @@ fn build_overview(
     anchor: Option<String>,
     custom_start: Option<String>,
     custom_end: Option<String>,
-    billing_anchor_day: i64,
     live_rate_limits: Option<LiveRateLimitSnapshot>,
     live_window_offset: Option<i64>,
     source_ids: Option<&[String]>,
@@ -276,7 +264,6 @@ fn build_overview(
         custom_start,
         custom_end,
         &source_events,
-        billing_anchor_day,
         live_rate_limits.as_ref(),
         live_window_offset,
     )?;
@@ -377,7 +364,6 @@ fn build_conversation_list(
     events: &[EventRow],
     _subscription_records: &[SubscriptionRecord],
     filters: Option<ConversationFilters>,
-    billing_anchor_day: i64,
     live_rate_limits: Option<&LiveRateLimitSnapshot>,
 ) -> Result<Vec<ConversationListItem>, String> {
     let filters = filters.unwrap_or_default();
@@ -390,12 +376,12 @@ fn build_conversation_list(
         filters.custom_start.clone(),
         filters.custom_end.clone(),
         &source_events,
-        billing_anchor_day,
         live_rate_limits,
         filters.live_window_offset,
     )?
     .window;
     let search = filters.search.unwrap_or_default().to_ascii_lowercase();
+    let source_labels = load_source_label_map(conn).map_err(|error| error.to_string())?;
 
     let mut groups: BTreeMap<String, ConversationAccumulator> = BTreeMap::new();
 
@@ -418,6 +404,7 @@ fn build_conversation_list(
                 session_ids: HashSet::new(),
                 api_value_usd: 0.0,
                 source_states: HashSet::new(),
+                source_ids: HashSet::new(),
             });
 
         if group.title.is_empty() {
@@ -427,6 +414,17 @@ fn build_conversation_list(
         group.updated_at = max_option_string(group.updated_at.take(), session.updated_at.clone());
         group.session_ids.insert(session.session_id.clone());
         group.source_states.insert(session.source_state.clone());
+        if let Some(filter) = source_filter.as_ref() {
+            group.source_ids.extend(
+                session
+                    .source_ids
+                    .iter()
+                    .filter(|source_id| filter.contains(*source_id))
+                    .cloned(),
+            );
+        } else {
+            group.source_ids.extend(session.source_ids.iter().cloned());
+        }
     }
 
     let mut window_root_session_ids = HashSet::new();
@@ -478,6 +476,19 @@ fn build_conversation_list(
             continue;
         }
 
+        let mut source_labels_for_item = group
+            .source_ids
+            .iter()
+            .map(|source_id| {
+                source_labels
+                    .get(source_id)
+                    .cloned()
+                    .unwrap_or_else(|| source_id.clone())
+            })
+            .collect::<Vec<_>>();
+        source_labels_for_item.sort();
+        source_labels_for_item.dedup();
+
         items.push(ConversationListItem {
             root_session_id,
             title,
@@ -494,6 +505,7 @@ fn build_conversation_list(
             api_value_usd: group.api_value_usd,
             subscription_share: 0.0,
             source_states: sorted_strings(group.source_states),
+            source_labels: source_labels_for_item,
         });
     }
 
@@ -1500,7 +1512,6 @@ fn resolve_window(
     custom_start: Option<String>,
     custom_end: Option<String>,
     events: &[EventRow],
-    billing_anchor_day: i64,
     live_rate_limits: Option<&LiveRateLimitSnapshot>,
     live_window_offset: Option<i64>,
 ) -> Result<ResolvedWindow, String> {
@@ -1545,13 +1556,6 @@ fn resolve_window(
       let end = local_midnight(exclusive_end_date)?;
       (start, end, start_date, 0, 0)
     }
-    "subscription_month" => {
-      let cycle_start_date = billing_cycle_start(anchor_date, billing_anchor_day as u32);
-      let start = local_midnight(cycle_start_date)?;
-      let cycle_end = billing_cycle_next_start(cycle_start_date, billing_anchor_day as u32);
-      let end = local_midnight(cycle_end)?;
-      (start, end, cycle_start_date, 0, 0)
-    }
     "month" => {
       let start_date = NaiveDate::from_ymd_opt(anchor_date.year(), anchor_date.month(), 1)
         .ok_or_else(|| "Invalid month anchor.".to_string())?;
@@ -1595,7 +1599,7 @@ fn resolve_window(
     }
     _ => {
       return Err(format!(
-        "Unsupported bucket {}. Expected day, week, five_hour, seven_day, subscription_month, month, year, custom, or total.",
+        "Unsupported bucket {}. Expected day, week, five_hour, seven_day, month, year, custom, or total.",
         bucket
       ))
     }
@@ -1856,7 +1860,7 @@ fn build_bins(window: &Window) -> Vec<TrendBin> {
         let next = match window.bucket.as_str() {
             "day" => current + chrono::Duration::hours(1),
             "five_hour" => current + chrono::Duration::minutes(15),
-            "week" | "subscription_month" | "month" => current + chrono::Duration::days(1),
+            "week" | "month" => current + chrono::Duration::days(1),
             "seven_day" => current + chrono::Duration::hours(1),
             "custom" if custom_window_uses_hourly_bins(window) => {
                 current + chrono::Duration::hours(1)
@@ -1878,8 +1882,12 @@ fn build_bins(window: &Window) -> Vec<TrendBin> {
         let label = match window.bucket.as_str() {
             "day" | "five_hour" => current.format("%H:%M").to_string(),
             "seven_day" => current.format("%b %d %H:%M").to_string(),
-            "custom" if custom_window_uses_hourly_bins(window) => current.format("%H:%M").to_string(),
-            "custom" if custom_window_uses_monthly_bins(window) => current.format("%b %Y").to_string(),
+            "custom" if custom_window_uses_hourly_bins(window) => {
+                current.format("%H:%M").to_string()
+            }
+            "custom" if custom_window_uses_monthly_bins(window) => {
+                current.format("%b %Y").to_string()
+            }
             "year" | "total" => current.format("%b %Y").to_string(),
             _ => current.format("%b %d").to_string(),
         };
@@ -2041,28 +2049,6 @@ fn normalize_local_timestamp(timestamp: DateTime<Local>) -> DateTime<Local> {
         .unwrap_or(timestamp)
 }
 
-fn billing_cycle_start(anchor_date: NaiveDate, billing_anchor_day: u32) -> NaiveDate {
-    let this_month_anchor = anchored_date(anchor_date.year(), anchor_date.month(), billing_anchor_day);
-    if anchor_date >= this_month_anchor {
-        this_month_anchor
-    } else {
-        add_months(this_month_anchor, -1)
-    }
-}
-
-fn billing_cycle_next_start(cycle_start: NaiveDate, billing_anchor_day: u32) -> NaiveDate {
-    let next_month = add_months(cycle_start, 1);
-    anchored_date(next_month.year(), next_month.month(), billing_anchor_day)
-}
-
-fn anchored_date(year: i32, month: u32, billing_anchor_day: u32) -> NaiveDate {
-    let mut day = billing_anchor_day.clamp(1, 28);
-    while NaiveDate::from_ymd_opt(year, month, day).is_none() {
-        day -= 1;
-    }
-    NaiveDate::from_ymd_opt(year, month, day).unwrap()
-}
-
 fn add_months(date: NaiveDate, months: i32) -> NaiveDate {
     if months >= 0 {
         date.checked_add_months(Months::new(months as u32))
@@ -2172,6 +2158,7 @@ struct ConversationAccumulator {
     session_ids: HashSet<String>,
     api_value_usd: f64,
     source_states: HashSet<String>,
+    source_ids: HashSet<String>,
 }
 
 #[derive(Debug, Default)]
@@ -2445,7 +2432,6 @@ mod tests {
                 anchor: Some("2026-05-01".to_string()),
                 ..Default::default()
             }),
-            1,
             None,
         )
         .expect("build list");
@@ -2463,7 +2449,6 @@ mod tests {
                 anchor: Some("2026-05-02".to_string()),
                 ..Default::default()
             }),
-            1,
             None,
         )
         .expect("build empty list");
@@ -2653,35 +2638,6 @@ mod tests {
     }
 
     #[test]
-    fn subscription_month_alias_uses_calendar_month() {
-        let conn = Connection::open_in_memory().expect("open in-memory database");
-        init_db(&conn).expect("init db");
-        let window = resolve_window(
-            &conn,
-            Some("subscription_month".to_string()),
-            Some("2026-03-26".to_string()),
-            None,
-            None,
-            &[],
-            23,
-            None,
-            None,
-        )
-        .expect("resolve window");
-
-        assert_eq!(window.window.bucket, "subscription_month");
-        assert_eq!(window.window.anchor, "2026-03-23");
-        assert_eq!(
-            window.window.start.date_naive(),
-            NaiveDate::from_ymd_opt(2026, 3, 23).unwrap()
-        );
-        assert_eq!(
-            window.window.end.date_naive(),
-            NaiveDate::from_ymd_opt(2026, 4, 23).unwrap()
-        );
-    }
-
-    #[test]
     fn month_window_uses_calendar_month() {
         let conn = Connection::open_in_memory().expect("open in-memory database");
         init_db(&conn).expect("init db");
@@ -2692,7 +2648,6 @@ mod tests {
             None,
             None,
             &[],
-            1,
             None,
             None,
         )
@@ -2720,7 +2675,6 @@ mod tests {
             Some("2026-04-10".to_string()),
             Some("2026-04-12".to_string()),
             &[],
-            1,
             None,
             None,
         )
@@ -2749,7 +2703,6 @@ mod tests {
             Some("2026-04-12".to_string()),
             Some("2026-04-10".to_string()),
             &[],
-            1,
             None,
             None,
         )
@@ -2876,7 +2829,6 @@ mod tests {
             None,
             None,
             &[],
-            1,
             Some(&live_rate_limits),
             None,
         )
@@ -2933,7 +2885,6 @@ mod tests {
             None,
             None,
             &[],
-            1,
             Some(&current),
             Some(1),
         )

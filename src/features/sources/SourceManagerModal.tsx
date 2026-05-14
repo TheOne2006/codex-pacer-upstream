@@ -1,5 +1,6 @@
 import { DatabaseZap, Trash2 } from 'lucide-react'
 
+import { formatCompactDateTime, formatDateTime } from '../../app/format'
 import { useI18n } from '../../app/useI18n'
 import type { CodexSource } from '../../app/types'
 import { formatSourceStatus, formatSourceSubtitle } from './sourceUtils'
@@ -14,6 +15,8 @@ interface SourceManagerModalProps {
   onOpenAddModal: () => void
   onDownloadSource: (sourceId: string) => void
   onDownloadAllSources: () => void
+  onDownloadSelectedSources: () => void
+  onToggleSource: (source: CodexSource, selected: boolean) => void
   onDeleteSource: (source: CodexSource) => void
 }
 
@@ -27,12 +30,15 @@ export function SourceManagerModal({
   onOpenAddModal,
   onDownloadSource,
   onDownloadAllSources,
+  onDownloadSelectedSources,
+  onToggleSource,
   onDeleteSource,
 }: SourceManagerModalProps) {
-  const { t } = useI18n()
+  const { language, t } = useI18n()
   if (!isOpen) return null
 
   const remoteSources = sources.filter((source) => source.kind === 'ssh')
+  const selectedRemoteSources = remoteSources.filter((source) => source.selected)
   const hasRemoteSources = remoteSources.length > 0
   const anyBusy = remoteSources.some(
     (source) => downloadingSourceIds.has(source.id) || deletingSourceIds.has(source.id),
@@ -49,6 +55,9 @@ export function SourceManagerModal({
             <div>
               <p className="eyebrow">{t.sources.remoteSources}</p>
               <h3>SSH Codex</h3>
+              <p className="source-manager-subtitle">
+                {t.sources.sourceSelectionStats(selectedRemoteSources.length, remoteSources.length)}
+              </p>
             </div>
           </div>
           <button className="ghost-button" onClick={onClose} type="button">
@@ -57,11 +66,19 @@ export function SourceManagerModal({
         </div>
 
         <div className="source-manager-actions">
-          <button className="ghost-button sidebar-source-action" onClick={onOpenAddModal} type="button">
+          <button className="ghost-button source-manager-action source-manager-action--add" onClick={onOpenAddModal} type="button">
             {t.sources.addSsh}
           </button>
           <button
-            className="ghost-button sidebar-source-action sidebar-source-action--update"
+            className="ghost-button source-manager-action source-manager-action--selected"
+            disabled={selectedRemoteSources.length === 0 || anyBusy}
+            onClick={onDownloadSelectedSources}
+            type="button"
+          >
+            {t.sources.updateSelected}
+          </button>
+          <button
+            className="ghost-button source-manager-action source-manager-action--all"
             disabled={!hasRemoteSources || anyBusy}
             onClick={onDownloadAllSources}
             type="button"
@@ -78,32 +95,52 @@ export function SourceManagerModal({
               const downloading = downloadingSourceIds.has(source.id)
               const deleting = deletingSourceIds.has(source.id)
               const busy = downloading || deleting
+              const cachedAt = source.lastDownloadedAt
+                ? t.sources.cachedAt(formatCompactDateTime(source.lastDownloadedAt, language))
+                : null
+              const cachedAtTitle = source.lastDownloadedAt
+                ? t.sources.cachedAt(formatDateTime(source.lastDownloadedAt, language))
+                : undefined
               return (
-                <article className="source-manager-item" key={source.id}>
-                  <div className="sidebar-source-title-row">
-                    <strong title={source.label}>{source.label}</strong>
-                    <span className={`source-status source-status--${source.status}`}>{formatSourceStatus(source, t)}</span>
-                  </div>
-                  <small title={formatSourceSubtitle(source, t)}>{formatSourceSubtitle(source, t)}</small>
-                  <div className="sidebar-source-row-actions">
-                    <button
-                      className="ghost-button source-mini-button"
+                <article className={`source-manager-item ${source.selected ? 'selected' : ''}`} key={source.id}>
+                  <label className="source-manager-item-main">
+                    <input
+                      checked={source.selected}
                       disabled={busy}
-                      onClick={() => onDownloadSource(source.id)}
-                      type="button"
-                    >
-                      {downloading ? t.sources.updating : t.sources.update}
-                    </button>
-                    <button
-                      aria-label={t.sources.deleteSourceLabel(source.label)}
-                      className="ghost-button source-icon-button source-danger-button"
-                      disabled={busy}
-                      onClick={() => onDeleteSource(source)}
-                      title={deleting ? t.sources.deleting : t.sources.deleteSource}
-                      type="button"
-                    >
-                      <Trash2 aria-hidden="true" size={14} />
-                    </button>
+                      onChange={(event) => onToggleSource(source, event.target.checked)}
+                      type="checkbox"
+                    />
+                    <span className="source-manager-checkmark" aria-hidden="true" />
+                    <span className="source-manager-item-copy">
+                      <strong title={source.label}>{source.label}</strong>
+                      <small title={formatSourceSubtitle(source, t)}>{formatSourceSubtitle(source, t)}</small>
+                    </span>
+                  </label>
+                  <div className="source-manager-item-side">
+                    <div className="source-manager-status-stack">
+                      <span className={`source-status source-status--${source.status}`}>{formatSourceStatus(source, t)}</span>
+                      {cachedAt ? <span className="source-cache-time" title={cachedAtTitle}>{cachedAt}</span> : null}
+                    </div>
+                    <div className="sidebar-source-row-actions">
+                      <button
+                        className="ghost-button source-mini-button"
+                        disabled={busy}
+                        onClick={() => onDownloadSource(source.id)}
+                        type="button"
+                      >
+                        {downloading ? t.sources.updating : t.sources.update}
+                      </button>
+                      <button
+                        aria-label={t.sources.deleteSourceLabel(source.label)}
+                        className="ghost-button source-icon-button source-danger-button"
+                        disabled={busy}
+                        onClick={() => onDeleteSource(source)}
+                        title={deleting ? t.sources.deleting : t.sources.deleteSource}
+                        type="button"
+                      >
+                        <Trash2 aria-hidden="true" size={14} />
+                      </button>
+                    </div>
                   </div>
                   {busy ? <div className="source-progress"><span /></div> : null}
                   {source.lastError ? <p className="source-error">{source.lastError}</p> : null}

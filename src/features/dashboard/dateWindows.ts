@@ -4,7 +4,6 @@ import type { OverviewBucket } from '../../app/types'
 export const CALENDAR_BUCKETS: OverviewBucket[] = [
   'day',
   'week',
-  'subscription_month',
   'month',
   'year',
   'custom',
@@ -41,7 +40,6 @@ export function createCalendarAnchors(value: string): Record<CalendarAnchorBucke
 
 export function calendarBucketForAnchor(bucket: OverviewBucket): CalendarAnchorBucket | null {
   if (bucket === 'day' || bucket === 'week' || bucket === 'month' || bucket === 'year') return bucket
-  if (bucket === 'subscription_month') return 'month'
   return null
 }
 
@@ -106,6 +104,7 @@ export function inclusiveWindowEnd(windowEnd: string | null) {
 export function formatCustomRangeLabel(windowStart: string | null, windowEnd: string | null, language: string) {
   const start = formatDateOnly(windowStart ?? '', language)
   const end = formatDateOnly(inclusiveWindowEnd(windowEnd) ?? '', language)
+  if (start === end) return start
   return `${start} → ${end}`
 }
 
@@ -139,7 +138,10 @@ function addMonths(date: Date, months: number) {
 }
 
 function parseIsoDate(value: string) {
-  const date = new Date(`${value}T00:00:00`)
+  const dateOnlyMatch = value.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/)
+  const date = dateOnlyMatch
+    ? new Date(Number(dateOnlyMatch[1]), Number(dateOnlyMatch[2]) - 1, Number(dateOnlyMatch[3]))
+    : new Date(value)
   return Number.isNaN(date.getTime()) ? null : date
 }
 

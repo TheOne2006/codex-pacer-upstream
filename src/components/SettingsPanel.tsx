@@ -67,7 +67,7 @@ function addOneMonth(value: string) {
   return `${year}-${month}-${day}`
 }
 
-type SubscriptionPlanOption = 'plus' | 'pro_x5' | 'pro_x10'
+type SubscriptionPlanOption = 'plus' | 'pro_x5' | 'pro_x20'
 
 interface SubscriptionRecordFormState {
   serviceStart: string
@@ -80,13 +80,13 @@ interface SubscriptionRecordFormState {
 const SUBSCRIPTION_PLAN_AMOUNTS: Record<SubscriptionPlanOption, number> = {
   plus: 19.99,
   pro_x5: 100,
-  pro_x10: 200,
+  pro_x20: 200,
 }
 
 function normalizePlanOption(planType?: string | null): SubscriptionPlanOption {
   const normalized = planType?.toLowerCase().replace(/[×*]/g, 'x').replace(/[\s-]+/g, '_') ?? ''
   if (normalized.includes('pro') && normalized.includes('5')) return 'pro_x5'
-  if (normalized.includes('pro')) return 'pro_x10'
+  if (normalized.includes('pro')) return 'pro_x20'
   return 'plus'
 }
 
@@ -122,12 +122,12 @@ function formatPlanLabel(
   labels: {
     planPlus: string
     planPro5: string
-    planPro10: string
+    planPro20: string
   },
 ) {
   const normalized = normalizePlanOption(planType)
   if (normalized === 'pro_x5') return labels.planPro5
-  if (normalized === 'pro_x10') return labels.planPro10
+  if (normalized === 'pro_x20') return labels.planPro20
   return labels.planPlus
 }
 
@@ -300,9 +300,9 @@ export function SettingsPanel({
       amountUsd: SUBSCRIPTION_PLAN_AMOUNTS.pro_x5,
     },
     {
-      value: 'pro_x10',
-      label: t.settings.sections.subscription.planPro10,
-      amountUsd: SUBSCRIPTION_PLAN_AMOUNTS.pro_x10,
+      value: 'pro_x20',
+      label: t.settings.sections.subscription.planPro20,
+      amountUsd: SUBSCRIPTION_PLAN_AMOUNTS.pro_x20,
     },
   ]
 
@@ -589,7 +589,7 @@ export function SettingsPanel({
                 <label className="field">
                   <span>{t.settings.sections.menuBar.range}</span>
                   <select
-                    value={draftSync.menuBarBucket === 'subscription_month' ? 'month' : draftSync.menuBarBucket}
+                    value={draftSync.menuBarBucket}
                     onChange={(event) =>
                       setDraftSync((current) =>
                         current

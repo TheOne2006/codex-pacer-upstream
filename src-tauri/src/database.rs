@@ -89,10 +89,22 @@ fn ensure_singletons(conn: &Connection) -> rusqlite::Result<()> {
       menu_bar_popup_show_reset_timeline, menu_bar_popup_show_actions,
       last_scan_started_at, last_scan_completed_at, updated_at
     )
-    VALUES (1, 2, NULL, 1, 5, 300, 0, 1, 1, 0, 'remaining_percent', 'five_hour', 'day', 1, 85, 115, '🟢', '🔥', '🐢', 1, ?2, 1, 1, NULL, NULL, ?1)
+    VALUES (1, 3, NULL, 1, 5, 300, 1, 1, 1, 0, 'remaining_percent', 'five_hour', 'day', 1, 85, 115, '🟢', '🔥', '🐢', 1, ?2, 1, 1, NULL, NULL, ?1)
     ON CONFLICT(singleton_id) DO NOTHING
     ",
         params![now, sync_settings::default_menu_bar_popup_modules_json()],
+    )?;
+
+    conn.execute(
+        "
+    UPDATE sync_settings
+    SET sync_settings_schema_version = 3,
+        hide_dock_icon_when_menu_bar_visible = 1,
+        updated_at = ?1
+    WHERE singleton_id = 1
+      AND sync_settings_schema_version < 3
+    ",
+        params![now],
     )?;
 
     Ok(())
@@ -122,6 +134,7 @@ mod tests {
 
         let settings = get_sync_settings(&conn).expect("load settings");
         assert!(settings.show_menu_bar_logo);
+        assert!(settings.hide_dock_icon_when_menu_bar_visible);
         assert_eq!(settings.live_quota_refresh_interval_seconds, 300);
         assert_eq!(
             settings.menu_bar_popup_modules,

@@ -105,7 +105,7 @@ impl Default for SyncSettings {
             auto_scan_enabled: true,
             auto_scan_interval_minutes: 5,
             live_quota_refresh_interval_seconds: 300,
-            hide_dock_icon_when_menu_bar_visible: false,
+            hide_dock_icon_when_menu_bar_visible: true,
             show_menu_bar_logo: true,
             show_menu_bar_daily_api_value: true,
             show_menu_bar_live_quota_percent: false,
@@ -190,6 +190,20 @@ pub struct CodexSourceDownloadProgress {
 pub struct CodexSourceDownloadResult {
     pub source: CodexSource,
     pub scan_result: ScanResult,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexSourceDownloadFailure {
+    pub source_id: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexSourceBatchDownloadResult {
+    pub results: Vec<CodexSourceDownloadResult>,
+    pub failures: Vec<CodexSourceDownloadFailure>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -473,6 +487,7 @@ pub struct ConversationListItem {
     pub api_value_usd: f64,
     pub subscription_share: f64,
     pub source_states: Vec<String>,
+    pub source_labels: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

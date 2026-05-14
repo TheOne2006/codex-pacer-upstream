@@ -98,6 +98,30 @@ export type TranslationSet = {
     title: string
     shown: (count: number) => string
     empty: string
+    sort: string
+    sortField: string
+    sortDirection: string
+    sortFields: {
+      value: string
+      tokens: string
+      updatedAt: string
+      startedAt: string
+      sessions: string
+    }
+    sortDirections: {
+      numeric: {
+        desc: string
+        asc: string
+      }
+      time: {
+        desc: string
+        asc: string
+      }
+      count: {
+        desc: string
+        asc: string
+      }
+    }
   }
   detail: {
     eyebrow: string
@@ -148,17 +172,20 @@ export type TranslationSet = {
     label: string
     remoteSources: string
     chooseSources: string
+    sourceSelectionStats: (selected: number, total: number) => string
     noneSelected: string
     listSeparator: string
     local: string
     localCodexHome: string
     cached: string
+    cachedAt: (value: string) => string
     added: string
     failed: string
     downloading: string
     notDownloaded: string
     addSsh: string
     updateAll: string
+    updateSelected: string
     noRemoteSources: string
     update: string
     updating: string
@@ -178,7 +205,10 @@ export type TranslationSet = {
     addedSource: (label: string) => string
     downloadingRemoteCache: string
     downloadedAndImported: (files: number) => string
+    selectedRemoteSourcesSynced: (sources: number, files: number) => string
+    remoteSourcesSyncFailed: (failures: number) => string
     noSshServersAdded: string
+    noSelectedSshServers: string
     deletingSource: (label: string) => string
     deletedSource: (label: string) => string
     maintenanceActions: string
@@ -312,7 +342,7 @@ export type TranslationSet = {
         planType: string
         planPlus: string
         planPro5: string
-        planPro10: string
+        planPro20: string
         accountEmail: string
         accountEmailPlaceholder: string
         note: string

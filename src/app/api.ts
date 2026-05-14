@@ -4,6 +4,7 @@ import { todayInputValue } from './format'
 import type {
   CodexAccountStatus,
   CodexSource,
+  CodexSourceBatchDownloadResult,
   CodexSourceCandidate,
   CodexSourceDownloadResult,
   CodexSourceInput,
@@ -34,7 +35,7 @@ function createMockSyncSettings(): SyncSettings {
     autoScanEnabled: false,
     autoScanIntervalMinutes: 5,
     liveQuotaRefreshIntervalSeconds: 300,
-    hideDockIconWhenMenuBarVisible: false,
+    hideDockIconWhenMenuBarVisible: true,
     showMenuBarLogo: true,
     showMenuBarDailyApiValue: true,
     showMenuBarLiveQuotaPercent: false,
@@ -385,6 +386,26 @@ export async function downloadCodexSource(sourceId: string): Promise<CodexSource
       },
     }
   })
+}
+
+export async function downloadCodexSources(sourceIds: string[]): Promise<CodexSourceBatchDownloadResult> {
+  return invokeOrMock('downloadCodexSources', { sourceIds }, () => ({
+    results: sourceIds.map((sourceId) => {
+      const source = { ...createMockCodexSources()[0], id: sourceId, kind: 'ssh', status: 'ready' }
+      return {
+        source,
+        scanResult: {
+          codexHome: source.localCodexHome ?? '',
+          scannedFiles: 0,
+          importedSessions: 0,
+          updatedSessions: 0,
+          missingSessions: 0,
+          lastCompletedAt: nowIso(),
+        },
+      }
+    }),
+    failures: [],
+  }))
 }
 
 export async function getLiveRateLimits(): Promise<LiveRateLimitSnapshot> {

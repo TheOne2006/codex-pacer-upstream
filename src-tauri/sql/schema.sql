@@ -84,12 +84,12 @@ CREATE TABLE IF NOT EXISTS session_overrides (
 
 CREATE TABLE IF NOT EXISTS sync_settings (
   singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
-  sync_settings_schema_version INTEGER NOT NULL DEFAULT 2,
+  sync_settings_schema_version INTEGER NOT NULL DEFAULT 3,
   codex_home TEXT,
   auto_scan_enabled INTEGER NOT NULL,
   auto_scan_interval_minutes INTEGER NOT NULL,
   live_quota_refresh_interval_seconds INTEGER NOT NULL DEFAULT 300,
-  hide_dock_icon_when_menu_bar_visible INTEGER NOT NULL DEFAULT 0,
+  hide_dock_icon_when_menu_bar_visible INTEGER NOT NULL DEFAULT 1,
   show_menu_bar_logo INTEGER NOT NULL DEFAULT 1,
   show_menu_bar_daily_api_value INTEGER NOT NULL DEFAULT 1,
   show_menu_bar_live_quota_percent INTEGER NOT NULL DEFAULT 0,

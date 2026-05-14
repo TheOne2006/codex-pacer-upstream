@@ -1,4 +1,4 @@
-import { startTransition, useCallback, useDeferredValue, useEffect, useRef, useState } from 'react'
+import { startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { isTauri } from '@tauri-apps/api/core'
 import { emitTo, listen } from '@tauri-apps/api/event'
 import {
@@ -6,10 +6,12 @@ import {
   ChartNoAxesCombined,
   ChevronLeft,
   ChevronRight,
+  Check,
   Clock3,
   RefreshCw,
   Settings2,
   Sparkles,
+  ArrowUpDown,
 } from 'lucide-react'
 
 import {
@@ -17,7 +19,7 @@ import {
   deleteCodexSource,
   deleteSubscriptionRecord,
   discoverSshCodexSources,
-  downloadCodexSource,
+  downloadCodexSources,
   getScanInProgress,
   getConversationDetail,
   getLiveRateLimits,
@@ -103,6 +105,11 @@ const MENU_BAR_POPUP_LANGUAGE_EVENT = 'codex-counter://language-changed'
 const PRODUCT_NAME = 'Codex Pacer'
 
 type StatusMessageKey = 'waitingForFirstScan' | 'fetchingLiveQuotaWindow'
+type ConversationSortField = 'value' | 'tokens' | 'updatedAt' | 'startedAt' | 'sessions'
+type ConversationSortDirection = 'desc' | 'asc'
+
+const conversationSortFields: ConversationSortField[] = ['value', 'tokens', 'updatedAt', 'startedAt', 'sessions']
+const conversationSortDirections: ConversationSortDirection[] = ['desc', 'asc']
 
 function statusMessageForKey(key: StatusMessageKey, t: ReturnType<typeof useI18n>['t']) {
   return key === 'waitingForFirstScan' ? t.status.waitingForFirstScan : t.status.fetchingLiveQuotaWindow
@@ -148,6 +155,10 @@ function App() {
   const [statusMessageText, setStatusMessageText] = useState('')
   const [isBusy, setIsBusy] = useState(false)
   const [search, setSearch] = useState('')
+  const [conversationSortField, setConversationSortField] = useState<ConversationSortField>('value')
+  const [conversationSortDirection, setConversationSortDirection] =
+    useState<ConversationSortDirection>('desc')
+  const [conversationSortOpen, setConversationSortOpen] = useState(false)
   const deferredSearch = useDeferredValue(search)
   const syncSettingsRef = useRef<SyncSettings | null>(null)
   const loadShellRef = useRef<(requestScan?: boolean) => Promise<void>>(async () => {})
@@ -550,25 +561,53 @@ function App() {
     }
   }
 
-  async function handleDownloadSource(sourceId: string) {
-    setDownloadingSourceIds((current) => new Set(current).add(sourceId))
+  async function handleDownloadSources(sourceIds: string[]) {
+    const uniqueSourceIds = Array.from(new Set(sourceIds))
+    if (uniqueSourceIds.length === 0) {
+      return
+    }
+    setDownloadingSourceIds((current) => {
+      const next = new Set(current)
+      uniqueSourceIds.forEach((sourceId) => next.add(sourceId))
+      return next
+    })
     setSourceManagerMessage(t.sources.downloadingRemoteCache)
     try {
-      const result = await downloadCodexSource(sourceId)
-      setCodexSources((current) => upsertSourceInList(current, result.source))
-      detailCacheRef.current.clear()
-      await loadShell(false)
-      setSourceManagerMessage(t.sources.downloadedAndImported(result.scanResult.scannedFiles))
+      const result = await downloadCodexSources(uniqueSourceIds)
+      setCodexSources((current) =>
+        result.results.reduce((nextSources, item) => upsertSourceInList(nextSources, item.source), current),
+      )
+      const scannedFiles = result.results.reduce((sum, item) => sum + item.scanResult.scannedFiles, 0)
+      if (result.results.length > 0) {
+        detailCacheRef.current.clear()
+        await loadShell(false)
+      } else {
+        await refreshCodexSources()
+      }
+      const messages = []
+      if (result.results.length === 1 && uniqueSourceIds.length === 1) {
+        messages.push(t.sources.downloadedAndImported(scannedFiles))
+      } else if (result.results.length > 0) {
+        messages.push(t.sources.selectedRemoteSourcesSynced(result.results.length, scannedFiles))
+      }
+      if (result.failures.length > 0) {
+        messages.push(t.sources.remoteSourcesSyncFailed(result.failures.length))
+      }
+      setSourceManagerMessage(messages.join('；') || t.sources.remoteSourcesSyncFailed(uniqueSourceIds.length))
     } catch (error) {
       setSourceManagerMessage(String(error))
       await refreshCodexSources()
     } finally {
       setDownloadingSourceIds((current) => {
         const next = new Set(current)
-        next.delete(sourceId)
+        uniqueSourceIds.forEach((sourceId) => next.delete(sourceId))
         return next
       })
     }
+  }
+
+  async function handleDownloadSource(sourceId: string) {
+    await handleDownloadSources([sourceId])
   }
 
   async function handleDownloadAllSources() {
@@ -579,10 +618,17 @@ function App() {
       return
     }
 
-    for (const source of remoteSources) {
-      // Sequential by design: avoids multiple SSH/tar imports racing over the same local DB.
-      await handleDownloadSource(source.id)
+    await handleDownloadSources(remoteSources.map((source) => source.id))
+  }
+
+  async function handleDownloadSelectedSources() {
+    const selectedRemoteSources = codexSources.filter((source) => source.kind === 'ssh' && source.selected)
+    if (selectedRemoteSources.length === 0) {
+      setSourceManagerMessage(t.sources.noSelectedSshServers)
+      return
     }
+
+    await handleDownloadSources(selectedRemoteSources.map((source) => source.id))
   }
 
   async function handleDeleteSource(source: CodexSource) {
@@ -668,6 +714,51 @@ function App() {
   const snapshotIsCurrent = loadedQueryKey === currentQueryKey
   const activeOverview = snapshotIsCurrent ? overview : null
   const activeConversations = snapshotIsCurrent ? conversations : []
+  const sortedActiveConversations = useMemo(() => {
+    const valueFor = (conversation: ConversationListItem) => {
+      switch (conversationSortField) {
+        case 'tokens':
+          return conversation.totalTokens
+        case 'updatedAt': {
+          const updatedAt = conversation.updatedAt ? Date.parse(conversation.updatedAt) : 0
+          return Number.isFinite(updatedAt) ? updatedAt : 0
+        }
+        case 'startedAt': {
+          const startedAt = conversation.startedAt ? Date.parse(conversation.startedAt) : 0
+          return Number.isFinite(startedAt) ? startedAt : 0
+        }
+        case 'sessions':
+          return conversation.sessionCount
+        case 'value':
+        default:
+          return conversation.apiValueUsd
+      }
+    }
+
+    return [...activeConversations].sort((left, right) => {
+      const leftValue = valueFor(left)
+      const rightValue = valueFor(right)
+      const primary =
+        conversationSortDirection === 'desc' ? rightValue - leftValue : leftValue - rightValue
+
+      if (primary !== 0) {
+        return primary
+      }
+
+      const parsedLeftUpdatedAt = left.updatedAt ? Date.parse(left.updatedAt) : 0
+      const parsedRightUpdatedAt = right.updatedAt ? Date.parse(right.updatedAt) : 0
+      const leftUpdatedAt = Number.isFinite(parsedLeftUpdatedAt) ? parsedLeftUpdatedAt : 0
+      const rightUpdatedAt = Number.isFinite(parsedRightUpdatedAt) ? parsedRightUpdatedAt : 0
+      return rightUpdatedAt - leftUpdatedAt || left.rootSessionId.localeCompare(right.rootSessionId)
+    })
+  }, [activeConversations, conversationSortDirection, conversationSortField])
+  const conversationSortDirectionLabel =
+    conversationSortField === 'updatedAt' || conversationSortField === 'startedAt'
+      ? t.conversationList.sortDirections.time[conversationSortDirection]
+      : conversationSortField === 'sessions'
+        ? t.conversationList.sortDirections.count[conversationSortDirection]
+        : t.conversationList.sortDirections.numeric[conversationSortDirection]
+  const conversationSortSummary = `${t.conversationList.sortFields[conversationSortField]} · ${conversationSortDirectionLabel}`
   const isLiveBucket = bucket === 'five_hour' || bucket === 'seven_day'
   const activeLiveWindowOffset = activeOverview?.liveWindowOffset ?? liveWindowOffset
   const activeLiveWindowCount = activeOverview?.liveWindowCount ?? (isLiveBucket ? 1 : 0)
@@ -676,9 +767,7 @@ function App() {
   const currentBucketLabel =
     activeOverview?.bucket === 'custom'
       ? formatCustomRangeLabel(activeOverview.windowStart, activeOverview.windowEnd, language)
-      : activeOverview?.bucket === 'subscription_month'
-        ? formatCustomRangeLabel(activeOverview.windowStart, activeOverview.windowEnd, language)
-        : bucket === 'five_hour'
+      : bucket === 'five_hour'
           ? isHistoricalLiveWindow
             ? t.bucketDescriptions.historicalFiveHourWindow
             : t.bucketDescriptions.currentFiveHourWindow
@@ -923,7 +1012,7 @@ function App() {
                       <ChevronRight aria-hidden="true" size={16} />
                     </button>
                   </div>
-                ) : bucket === 'month' || bucket === 'subscription_month' ? (
+                ) : bucket === 'month' ? (
                   <div className="period-nav period-nav--editable">
                     <button
                       aria-label={t.common.earlier}
@@ -1163,9 +1252,64 @@ function App() {
                       <p className="eyebrow">{t.conversationList.eyebrow}</p>
                       <h3>{t.conversationList.title}</h3>
                     </div>
-                    <span className="detail-micro list-toolbar-count">
-                      {t.conversationList.shown(activeConversations.length)}
-                    </span>
+                    <div className="list-toolbar-actions">
+                      <div className="conversation-sort">
+                        <button
+                          aria-expanded={conversationSortOpen}
+                          aria-label={t.conversationList.sort}
+                          className="conversation-sort-button"
+                          onClick={() => setConversationSortOpen((open) => !open)}
+                          type="button"
+                        >
+                          <ArrowUpDown aria-hidden="true" size={15} />
+                          <span>{conversationSortSummary}</span>
+                        </button>
+                        {conversationSortOpen ? (
+                          <div className="conversation-sort-menu">
+                            <p className="conversation-sort-heading">{t.conversationList.sortField}</p>
+                            {conversationSortFields.map((field) => (
+                              <button
+                                className={`conversation-sort-option ${
+                                  conversationSortField === field ? 'active' : ''
+                                }`}
+                                key={field}
+                                onClick={() => setConversationSortField(field)}
+                                type="button"
+                              >
+                                <span>{t.conversationList.sortFields[field]}</span>
+                                {conversationSortField === field ? <Check aria-hidden="true" size={14} /> : null}
+                              </button>
+                            ))}
+                            <div className="conversation-sort-divider" />
+                            <p className="conversation-sort-heading">{t.conversationList.sortDirection}</p>
+                            {conversationSortDirections.map((direction) => (
+                              <button
+                                className={`conversation-sort-option ${
+                                  conversationSortDirection === direction ? 'active' : ''
+                                }`}
+                                key={direction}
+                                onClick={() => setConversationSortDirection(direction)}
+                                type="button"
+                              >
+                                <span>
+                                  {conversationSortField === 'updatedAt' || conversationSortField === 'startedAt'
+                                    ? t.conversationList.sortDirections.time[direction]
+                                    : conversationSortField === 'sessions'
+                                      ? t.conversationList.sortDirections.count[direction]
+                                      : t.conversationList.sortDirections.numeric[direction]}
+                                </span>
+                                {conversationSortDirection === direction ? (
+                                  <Check aria-hidden="true" size={14} />
+                                ) : null}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                      <span className="detail-micro list-toolbar-count">
+                        {t.conversationList.shown(sortedActiveConversations.length)}
+                      </span>
+                    </div>
                   </div>
                   <input
                     aria-label={t.common.searchTitleOrSession}
@@ -1178,10 +1322,10 @@ function App() {
                 </div>
 
                 <div className="conversation-list">
-                  {activeConversations.length === 0 ? (
+                  {sortedActiveConversations.length === 0 ? (
                     <div className="empty-state">{t.conversationList.empty}</div>
                   ) : (
-                    activeConversations.map((conversation) => (
+                    sortedActiveConversations.map((conversation) => (
                       <button
                         key={conversation.rootSessionId}
                         className={`conversation-card ${
@@ -1202,6 +1346,20 @@ function App() {
                             </span>
                           ))}
                         </div>
+                        {conversation.sourceLabels.length > 0 ? (
+                          <div className="source-chip-row">
+                            {conversation.sourceLabels.slice(0, 2).map((sourceLabel) => (
+                              <span className="source-chip" key={sourceLabel} title={sourceLabel}>
+                                {sourceLabel}
+                              </span>
+                            ))}
+                            {conversation.sourceLabels.length > 2 ? (
+                              <span className="source-chip source-chip--more">
+                                +{conversation.sourceLabels.length - 2}
+                              </span>
+                            ) : null}
+                          </div>
+                        ) : null}
                         <div className="token-row">
                           <span>
                             {formatTokenCount(conversation.totalTokens, language)} {t.common.tokens}
@@ -1346,7 +1504,9 @@ function App() {
         onDeleteSource={handleDeleteSource}
         onDownloadAllSources={handleDownloadAllSources}
         onDownloadSource={handleDownloadSource}
+        onDownloadSelectedSources={handleDownloadSelectedSources}
         onOpenAddModal={handleOpenSourceModal}
+        onToggleSource={handleToggleSource}
         sources={codexSources}
       />
 

@@ -32,7 +32,7 @@ export function MetricCard({
       <strong aria-label={value} title={value}>
         {value}
       </strong>
-      {note ? <span className="stat-caption">{note}</span> : null}
+      {note ? <span className="stat-caption" title={note}>{note}</span> : null}
     </section>
   )
 }

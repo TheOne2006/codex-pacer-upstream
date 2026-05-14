@@ -3,7 +3,6 @@ export type OverviewBucket =
   | 'day'
   | 'seven_day'
   | 'week'
-  | 'subscription_month'
   | 'month'
   | 'year'
   | 'custom'
@@ -98,6 +97,16 @@ export interface CodexSourceDownloadProgress {
 export interface CodexSourceDownloadResult {
   source: CodexSource
   scanResult: ScanResult
+}
+
+export interface CodexSourceDownloadFailure {
+  sourceId: string
+  error: string
+}
+
+export interface CodexSourceBatchDownloadResult {
+  results: CodexSourceDownloadResult[]
+  failures: CodexSourceDownloadFailure[]
 }
 
 export interface SubscriptionProfile {
@@ -311,6 +320,7 @@ export interface ConversationListItem {
   apiValueUsd: number
   subscriptionShare: number
   sourceStates: string[]
+  sourceLabels: string[]
 }
 
 export interface ConversationSessionSummary {

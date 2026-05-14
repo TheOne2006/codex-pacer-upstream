@@ -25,11 +25,12 @@ use database::{
 };
 use importer::{perform_scan, perform_scan_for_source, recalculate_all_session_values};
 use models::{
-    CodexAccountStatus, CodexSource, CodexSourceCandidate, CodexSourceDownloadResult,
-    CodexSourceInput, ConversationDetail, ConversationFilters, ConversationListItem,
-    DashboardSnapshot, LiveRateLimitSnapshot, MenuBarPopupQuotaSnapshot, MenuBarPopupSnapshot,
-    MenuBarPopupSuggestedSpeed, OverviewResponse, PricingCatalogEntry, RateLimitWindowSnapshot,
-    ScanResult, SubscriptionProfile, SubscriptionRecord, SubscriptionRecordInput, SyncSettings,
+    CodexAccountStatus, CodexSource, CodexSourceBatchDownloadResult, CodexSourceCandidate,
+    CodexSourceDownloadResult, CodexSourceInput, ConversationDetail, ConversationFilters,
+    ConversationListItem, DashboardSnapshot, LiveRateLimitSnapshot, MenuBarPopupQuotaSnapshot,
+    MenuBarPopupSnapshot, MenuBarPopupSuggestedSpeed, OverviewResponse, PricingCatalogEntry,
+    RateLimitWindowSnapshot, ScanResult, SubscriptionProfile, SubscriptionRecord,
+    SubscriptionRecordInput, SyncSettings,
 };
 use pricing::{load_catalog, refresh_pricing_catalog_from_openai, seed_pricing_catalog};
 use queries::{
@@ -37,7 +38,10 @@ use queries::{
 };
 use rate_limits::{query_codex_account_status, query_live_rate_limits};
 use rusqlite::params;
-use sources::{discover_ssh_codex_sources, download_codex_source, source_cache_codex_home};
+use sources::{
+    discover_ssh_codex_sources, download_codex_source, download_codex_sources_parallel,
+    source_cache_codex_home,
+};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
@@ -357,6 +361,21 @@ async fn downloadCodexSource(
 
 #[allow(non_snake_case)]
 #[tauri::command(rename_all = "camelCase")]
+async fn downloadCodexSources(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    source_ids: Vec<String>,
+) -> Result<CodexSourceBatchDownloadResult, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        download_codex_sources_parallel(&app, &state.db_path, &state.app_data_dir, source_ids)
+    })
+    .await
+    .map_err(|error| format!("Failed to sync Codex sources: {error}"))
+}
+
+#[allow(non_snake_case)]
+#[tauri::command(rename_all = "camelCase")]
 fn getConversationDetail(
     state: State<'_, AppState>,
     root_session_id: String,
@@ -460,7 +479,7 @@ fn updateSyncSettings(
     };
     let saved = save_sync_settings(&conn, &updated).map_err(|error| error.to_string())?;
     refresh_daily_value_menu_bar(state.inner());
-    apply_dock_icon_visibility(&app, &saved, state.daily_value_tray.is_some());
+    sync_dock_icon_visibility(&app, state.inner());
     Ok(saved)
 }
 
@@ -670,11 +689,16 @@ fn should_hide_dock_icon(settings: &SyncSettings) -> bool {
 
 #[cfg(target_os = "macos")]
 fn apply_dock_icon_visibility(app: &AppHandle, settings: &SyncSettings, menu_bar_available: bool) {
-    let activation_policy = if menu_bar_available && should_hide_dock_icon(settings) {
-        tauri::ActivationPolicy::Accessory
-    } else {
-        tauri::ActivationPolicy::Regular
-    };
+    let main_window_visible = app
+        .get_webview_window(MAIN_WINDOW_LABEL)
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(true);
+    let activation_policy =
+        if menu_bar_available && should_hide_dock_icon(settings) && !main_window_visible {
+            tauri::ActivationPolicy::Accessory
+        } else {
+            tauri::ActivationPolicy::Regular
+        };
 
     if let Err(error) = app.set_activation_policy(activation_policy) {
         log::warn!("Failed to update macOS Dock visibility: {error}");
@@ -683,6 +707,26 @@ fn apply_dock_icon_visibility(app: &AppHandle, settings: &SyncSettings, menu_bar
 
 #[cfg(not(target_os = "macos"))]
 fn apply_dock_icon_visibility(_: &AppHandle, _: &SyncSettings, _: bool) {}
+
+fn sync_dock_icon_visibility(app: &AppHandle, state: &AppState) {
+    let Ok(conn) = open_connection(&state.db_path) else {
+        return;
+    };
+    let Ok(settings) = get_sync_settings(&conn) else {
+        return;
+    };
+    apply_dock_icon_visibility(app, &settings, state.daily_value_tray.is_some());
+}
+
+#[cfg(target_os = "macos")]
+fn show_dock_icon_for_main_window(app: &AppHandle) {
+    if let Err(error) = app.set_activation_policy(tauri::ActivationPolicy::Regular) {
+        log::warn!("Failed to show macOS Dock icon: {error}");
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn show_dock_icon_for_main_window(_: &AppHandle) {}
 
 fn apply_menu_bar_icon(tray: &TrayIcon, show_logo: bool) -> Result<(), String> {
     if show_logo {
@@ -766,7 +810,6 @@ fn menu_bar_title(
 
 fn normalize_menu_bar_bucket(bucket: &str) -> String {
     match bucket {
-        "subscription_month" => "month".to_string(),
         "day" | "week" | "five_hour" | "seven_day" | "month" | "year" | "total" => {
             bucket.to_string()
         }
@@ -1901,6 +1944,7 @@ fn build_daily_value_menu_bar(app: &AppHandle, db_path: &PathBuf) -> Result<Tray
 }
 
 fn show_main_window(app: &AppHandle) {
+    show_dock_icon_for_main_window(app);
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         let _ = window.unminimize();
         let _ = window.show();
@@ -1962,10 +2006,7 @@ pub fn run() {
     #[cfg(desktop)]
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            show_main_window(app);
         }));
     }
 
@@ -2014,6 +2055,7 @@ pub fn run() {
             if should_hide_to_menu_bar {
                 api.prevent_close();
                 let _ = window.hide();
+                sync_dock_icon_visibility(window.app_handle(), state.inner());
             }
         })
         .setup(|app| {
@@ -2084,6 +2126,7 @@ pub fn run() {
             setCodexSourceSelected,
             deleteCodexSource,
             downloadCodexSource,
+            downloadCodexSources,
             getConversationDetail,
             handleMenuBarPopupAction,
             getSyncSettings,
@@ -2096,8 +2139,14 @@ pub fn run() {
             deleteSubscriptionRecord,
             getCodexAccountStatus,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                show_main_window(app);
+            }
+        });
 }
 
 #[cfg(test)]

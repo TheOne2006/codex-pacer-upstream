@@ -3,7 +3,8 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::thread;
 
 use tauri::{AppHandle, Emitter};
 
@@ -11,7 +12,10 @@ use crate::database::{
     get_codex_source, now_utc_string, open_connection, update_codex_source_download_state,
 };
 use crate::importer::perform_scan_for_source;
-use crate::models::{CodexSourceCandidate, CodexSourceDownloadProgress, CodexSourceDownloadResult};
+use crate::models::{
+    CodexSourceBatchDownloadResult, CodexSourceCandidate, CodexSourceDownloadFailure,
+    CodexSourceDownloadProgress, CodexSourceDownloadResult,
+};
 
 const DOWNLOAD_PROGRESS_EVENT: &str = "codex-pacer://source-download-progress";
 
@@ -21,6 +25,12 @@ struct HostBlock {
     host_name: Option<String>,
     user: Option<String>,
     port: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+struct SyncedCodexSource {
+    source_id: String,
+    cache_dir: PathBuf,
 }
 
 pub fn discover_ssh_codex_sources() -> Vec<CodexSourceCandidate> {
@@ -47,6 +57,63 @@ pub fn download_codex_source(
     app_data_dir: &Path,
     source_id: &str,
 ) -> Result<CodexSourceDownloadResult, String> {
+    let synced = sync_codex_source_cache(app, db_path, app_data_dir, source_id)?;
+    import_synced_codex_source(app, db_path, &synced)
+}
+
+pub fn download_codex_sources_parallel(
+    app: &AppHandle,
+    db_path: &Path,
+    app_data_dir: &Path,
+    source_ids: Vec<String>,
+) -> CodexSourceBatchDownloadResult {
+    let handles = source_ids
+        .into_iter()
+        .map(|source_id| {
+            let app = app.clone();
+            let db_path = db_path.to_path_buf();
+            let app_data_dir = app_data_dir.to_path_buf();
+            let thread_source_id = source_id.clone();
+            let handle = thread::spawn(move || {
+                sync_codex_source_cache(&app, &db_path, &app_data_dir, &thread_source_id)
+            });
+            (source_id, handle)
+        })
+        .collect::<Vec<_>>();
+
+    let mut synced_sources = Vec::new();
+    let mut failures = Vec::new();
+    for (source_id, handle) in handles {
+        match handle.join() {
+            Ok(Ok(synced)) => synced_sources.push(synced),
+            Ok(Err(error)) => failures.push(CodexSourceDownloadFailure { source_id, error }),
+            Err(_) => failures.push(CodexSourceDownloadFailure {
+                source_id,
+                error: "Remote source sync thread panicked.".to_string(),
+            }),
+        }
+    }
+
+    let mut results = Vec::new();
+    for synced in synced_sources {
+        match import_synced_codex_source(app, db_path, &synced) {
+            Ok(result) => results.push(result),
+            Err(error) => failures.push(CodexSourceDownloadFailure {
+                source_id: synced.source_id,
+                error,
+            }),
+        }
+    }
+
+    CodexSourceBatchDownloadResult { results, failures }
+}
+
+fn sync_codex_source_cache(
+    app: &AppHandle,
+    db_path: &Path,
+    app_data_dir: &Path,
+    source_id: &str,
+) -> Result<SyncedCodexSource, String> {
     let conn = open_connection(db_path).map_err(|error| error.to_string())?;
     let source = get_codex_source(&conn, source_id).map_err(|error| error.to_string())?;
     if source.kind != "ssh" {
@@ -67,79 +134,32 @@ pub fn download_codex_source(
     emit_progress(app, source_id, "connecting", None, "连接远程服务器");
 
     let cache_dir = source_cache_codex_home(app_data_dir, source_id);
-    let parent = cache_dir
-        .parent()
-        .ok_or_else(|| "Failed to resolve source cache parent.".to_string())?;
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    let temp_dir = parent.join(format!(
-        ".download-{}",
-        now_utc_string().replace([':', '.'], "-")
-    ));
-    if temp_dir.exists() {
-        fs::remove_dir_all(&temp_dir).map_err(|error| error.to_string())?;
-    }
-    fs::create_dir_all(&temp_dir).map_err(|error| error.to_string())?;
+    fs::create_dir_all(&cache_dir).map_err(|error| error.to_string())?;
 
     emit_progress(
         app,
         source_id,
         "downloading",
         None,
-        "下载远程 Codex usage 缓存",
+        "同步远程 Codex usage 缓存",
     );
-    let remote_command = remote_tar_command(remote_home);
-    let mut ssh = Command::new("ssh")
+    let probe_command = remote_probe_command(remote_home);
+    let probe_output = Command::new("ssh")
         .arg("-o")
         .arg("BatchMode=yes")
         .arg("-o")
         .arg("ConnectTimeout=10")
         .arg(ssh_alias)
-        .arg(remote_command)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .arg(probe_command)
+        .output()
         .map_err(|error| format!("Failed to start ssh: {error}"))?;
 
-    let stdout = ssh
-        .stdout
-        .take()
-        .ok_or_else(|| "Failed to capture ssh stdout.".to_string())?;
-    let tar = Command::new("tar")
-        .arg("-xf")
-        .arg("-")
-        .arg("-C")
-        .arg(&temp_dir)
-        .stdin(Stdio::from(stdout))
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("Failed to start local tar: {error}"))?;
-
-    let tar_output = tar
-        .wait_with_output()
-        .map_err(|error| format!("Failed while extracting remote cache: {error}"))?;
-    let ssh_output = ssh
-        .wait_with_output()
-        .map_err(|error| format!("Failed while waiting for ssh: {error}"))?;
-
-    if !ssh_output.status.success() || !tar_output.status.success() {
-        let raw_message = [
-            String::from_utf8_lossy(&ssh_output.stderr)
-                .trim()
-                .to_string(),
-            String::from_utf8_lossy(&tar_output.stderr)
-                .trim()
-                .to_string(),
-        ]
-        .into_iter()
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>()
-        .join(" / ");
-        let error = remote_download_error_message(
-            &raw_message,
-            ssh_output.status.code(),
-            tar_output.status.code(),
-            remote_home,
-        );
+    if !probe_output.status.success() {
+        let raw_message = String::from_utf8_lossy(&probe_output.stderr)
+            .trim()
+            .to_string();
+        let error =
+            remote_sync_error_message(&raw_message, probe_output.status.code(), None, remote_home);
         let _ = update_codex_source_download_state(
             &conn,
             source_id,
@@ -148,22 +168,78 @@ pub fn download_codex_source(
             None,
             Some(&error),
         );
-        let _ = fs::remove_dir_all(&temp_dir);
         return Err(error);
     }
 
-    emit_progress(app, source_id, "installing", Some(0.8), "写入本地缓存");
-    if cache_dir.exists() {
-        fs::remove_dir_all(&cache_dir).map_err(|error| error.to_string())?;
-    }
-    fs::rename(&temp_dir, &cache_dir).map_err(|error| error.to_string())?;
+    let cache_dir_arg = format!("{}/", cache_dir.to_string_lossy());
+    let rsync_output = Command::new("rsync")
+        .arg("-az")
+        .arg("--delete")
+        .arg("--delete-excluded")
+        .arg("--delay-updates")
+        .arg("--rsync-path")
+        .arg(remote_rsync_path(remote_home))
+        .arg("-e")
+        .arg("ssh -o BatchMode=yes -o ConnectTimeout=10")
+        .arg("--include=/session_index.jsonl")
+        .arg("--include=/sessions/")
+        .arg("--include=/sessions/**")
+        .arg("--include=/archived_sessions/")
+        .arg("--include=/archived_sessions/**")
+        .arg("--exclude=*")
+        .arg(format!("{ssh_alias}:./"))
+        .arg(cache_dir_arg)
+        .output()
+        .map_err(|error| format!("Failed to start rsync: {error}"))?;
 
+    if !rsync_output.status.success() {
+        let raw_message = String::from_utf8_lossy(&rsync_output.stderr)
+            .trim()
+            .to_string();
+        let error =
+            remote_sync_error_message(&raw_message, None, rsync_output.status.code(), remote_home);
+        let _ = update_codex_source_download_state(
+            &conn,
+            source_id,
+            "failed",
+            None,
+            None,
+            Some(&error),
+        );
+        return Err(error);
+    }
+
+    Ok(SyncedCodexSource {
+        source_id: source_id.to_string(),
+        cache_dir,
+    })
+}
+
+fn import_synced_codex_source(
+    app: &AppHandle,
+    db_path: &Path,
+    synced: &SyncedCodexSource,
+) -> Result<CodexSourceDownloadResult, String> {
+    let source_id = &synced.source_id;
     emit_progress(app, source_id, "scanning", Some(0.9), "导入缓存");
     let scan_result = perform_scan_for_source(
         db_path,
         source_id,
-        Some(cache_dir.to_string_lossy().to_string()),
-    )?;
+        Some(synced.cache_dir.to_string_lossy().to_string()),
+    )
+    .map_err(|error| {
+        if let Ok(conn) = open_connection(db_path) {
+            let _ = update_codex_source_download_state(
+                &conn,
+                source_id,
+                "failed",
+                None,
+                None,
+                Some(&error),
+            );
+        }
+        error
+    })?;
     let now = now_utc_string();
     let conn = open_connection(db_path).map_err(|error| error.to_string())?;
     let source = update_codex_source_download_state(
@@ -201,11 +277,16 @@ fn emit_progress(
     );
 }
 
-fn remote_tar_command(remote_home: &str) -> String {
+fn remote_probe_command(remote_home: &str) -> String {
     let home = remote_path_expr(remote_home);
     format!(
-    "cd {home} || exit 2; set --; [ -f session_index.jsonl ] && set -- \"$@\" session_index.jsonl; [ -d sessions ] && set -- \"$@\" sessions; [ -d archived_sessions ] && set -- \"$@\" archived_sessions; [ \"$#\" -gt 0 ] || exit 3; tar -cf - \"$@\""
+        "cd {home} || exit 2; [ -f session_index.jsonl ] || [ -d sessions ] || [ -d archived_sessions ] || exit 3"
   )
+}
+
+fn remote_rsync_path(remote_home: &str) -> String {
+    let home = remote_path_expr(remote_home);
+    format!("cd {home} && rsync")
 }
 
 fn remote_path_expr(remote_home: &str) -> String {
@@ -224,29 +305,29 @@ fn remote_path_expr(remote_home: &str) -> String {
     }
 }
 
-fn remote_download_error_message(
+fn remote_sync_error_message(
     raw_message: &str,
-    ssh_status: Option<i32>,
-    tar_status: Option<i32>,
+    probe_status: Option<i32>,
+    rsync_status: Option<i32>,
     remote_home: &str,
 ) -> String {
-    if ssh_status == Some(2) || raw_message.contains("cd:") {
+    if probe_status == Some(2) || raw_message.contains("cd:") {
         return format!(
             "远程 Codex 目录不存在：{}。请确认这台服务器已运行过 Codex，或重新添加服务器时改成实际目录。",
             remote_home
         );
     }
-    if ssh_status == Some(3) {
+    if probe_status == Some(3) {
         return format!(
             "远程目录 {} 存在，但没有找到 Codex 会话缓存（session_index.jsonl / sessions / archived_sessions）。",
             remote_home
         );
     }
     if raw_message.is_empty() {
-        if let Some(code) = tar_status {
-            return format!("下载远程 Codex 缓存失败，本地解压退出码 {code}。");
+        if let Some(code) = rsync_status {
+            return format!("同步远程 Codex 缓存失败，rsync 退出码 {code}。");
         }
-        "下载远程 Codex 缓存失败。".to_string()
+        "同步远程 Codex 缓存失败。".to_string()
     } else {
         raw_message.to_string()
     }
@@ -533,24 +614,27 @@ mod tests {
     }
 
     #[test]
-    fn remote_tar_command_expands_tilde_on_remote_shell() {
-        let command = remote_tar_command("~/.codex");
-        assert!(command.starts_with("cd \"$HOME\"/'.codex' || exit 2;"));
-        assert!(!command.contains("cd '~/.codex'"));
+    fn remote_probe_and_rsync_path_expand_tilde_on_remote_shell() {
+        let probe = remote_probe_command("~/.codex");
+        assert!(probe.starts_with("cd \"$HOME\"/'.codex' || exit 2;"));
+        assert!(!probe.contains("cd '~/.codex'"));
 
-        let quoted = remote_tar_command("~/Codex Data");
+        let rsync_path = remote_rsync_path("~/.codex");
+        assert_eq!(rsync_path, "cd \"$HOME\"/'.codex' && rsync");
+
+        let quoted = remote_probe_command("~/Codex Data");
         assert!(quoted.starts_with("cd \"$HOME\"/'Codex Data' || exit 2;"));
 
-        let absolute = remote_tar_command("/opt/codex data");
+        let absolute = remote_probe_command("/opt/codex data");
         assert!(absolute.starts_with("cd '/opt/codex data' || exit 2;"));
     }
 
     #[test]
-    fn remote_download_error_message_hides_raw_bash_cd_error() {
-        let error = remote_download_error_message(
+    fn remote_sync_error_message_hides_raw_bash_cd_error() {
+        let error = remote_sync_error_message(
             "bash: line 1: cd: ~/.codex: No such file or directory",
             Some(2),
-            Some(0),
+            None,
             "~/.codex",
         );
 
