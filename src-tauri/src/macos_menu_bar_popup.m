@@ -33,12 +33,28 @@ static NSString *CPString(NSDictionary *dict, NSString *key) {
     return [value isKindOfClass:NSString.class] ? (NSString *)value : nil;
 }
 
-static NSString *CPBucketLabel(NSString *bucket) {
-    if ([bucket isEqualToString:@"day"]) return @"Today";
-    if ([bucket isEqualToString:@"seven_day"]) return @"7 days";
-    if ([bucket isEqualToString:@"month"]) return @"Month";
-    if ([bucket isEqualToString:@"custom"]) return @"Custom";
-    return bucket.length > 0 ? bucket : @"Month";
+static BOOL CPIsChineseLanguage(NSString *language) {
+    return ![language isEqualToString:@"en"];
+}
+
+static BOOL CPIsChineseSnapshot(NSDictionary *snapshot) {
+    return CPIsChineseLanguage(CPString(snapshot, @"displayLanguage"));
+}
+
+static NSString *CPT(BOOL zh, NSString *zhText, NSString *enText) {
+    return zh ? zhText : enText;
+}
+
+static NSString *CPBucketLabel(NSString *bucket, BOOL zh) {
+    if ([bucket isEqualToString:@"day"]) return CPT(zh, @"今日", @"Today");
+    if ([bucket isEqualToString:@"five_hour"]) return CPT(zh, @"5小时", @"5h");
+    if ([bucket isEqualToString:@"seven_day"]) return CPT(zh, @"7天", @"7d");
+    if ([bucket isEqualToString:@"week"]) return CPT(zh, @"本周", @"This week");
+    if ([bucket isEqualToString:@"month"]) return CPT(zh, @"本月", @"This month");
+    if ([bucket isEqualToString:@"year"]) return CPT(zh, @"本年", @"This year");
+    if ([bucket isEqualToString:@"custom"]) return CPT(zh, @"自定义", @"Custom");
+    if ([bucket isEqualToString:@"total"]) return CPT(zh, @"总计", @"Total");
+    return bucket.length > 0 ? bucket : CPT(zh, @"本月", @"This month");
 }
 
 static NSString *CPUSD(double value) {
@@ -49,10 +65,24 @@ static NSString *CPUSD(double value) {
     return [formatter stringFromNumber:@(value)] ?: [NSString stringWithFormat:@"$%.2f", value];
 }
 
-static NSString *CPCompactInteger(long long value) {
+static NSString *CPCompactUnit(double value, double divisor, NSString *unit) {
+    double scaled = value / divisor;
+    double rounded = round(scaled * 10.0) / 10.0;
+    if (fabs(rounded - round(rounded)) < 0.05) {
+        return [NSString stringWithFormat:@"%.0f%@", rounded, unit];
+    }
+    return [NSString stringWithFormat:@"%.1f%@", rounded, unit];
+}
+
+static NSString *CPCompactInteger(long long value, BOOL zh) {
     double absValue = fabs((double)value);
-    if (absValue >= 1000000.0) return [NSString stringWithFormat:@"%.1fM", value / 1000000.0];
-    if (absValue >= 100000.0) return [NSString stringWithFormat:@"%.1fK", value / 1000.0];
+    if (zh) {
+        if (absValue >= 100000000.0) return CPCompactUnit((double)value, 100000000.0, @"亿");
+        if (absValue >= 100000.0) return CPCompactUnit((double)value, 10000.0, @"万");
+    } else {
+        if (absValue >= 1000000.0) return CPCompactUnit((double)value, 1000000.0, @"M");
+        if (absValue >= 100000.0) return CPCompactUnit((double)value, 1000.0, @"K");
+    }
     NSNumberFormatter *formatter = [[NSNumberFormatter alloc] init];
     formatter.numberStyle = NSNumberFormatterDecimalStyle;
     return [formatter stringFromNumber:@(value)] ?: [NSString stringWithFormat:@"%lld", value];
@@ -89,22 +119,29 @@ static NSTimeInterval CPRoundToMinute(NSTimeInterval value) {
     return round(value / 60.0) * 60.0;
 }
 
-static NSString *CPShortDateTime(NSString *value) {
+static NSString *CPShortDateTime(NSString *value, BOOL zh) {
     NSDate *date = CPDateFromString(value);
-    if (!date) return @"n/a";
+    if (!date) return CPT(zh, @"无数据", @"No data");
     NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
-    formatter.dateFormat = @"MMM d HH:mm";
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:zh ? @"zh_CN" : @"en_US_POSIX"];
+    formatter.dateFormat = zh ? @"M月d日 HH:mm" : @"MMM d HH:mm";
     return [formatter stringFromDate:date];
 }
 
-static NSString *CPRelativeTime(NSString *value) {
+static NSString *CPRelativeTime(NSString *value, BOOL zh) {
     NSDate *date = CPDateFromString(value);
-    if (!date) return @"No data";
+    if (!date) return CPT(zh, @"无数据", @"No data");
     NSTimeInterval seconds = -[date timeIntervalSinceNow];
-    if (seconds < 60) return @"just now";
-    if (seconds < 3600) return [NSString stringWithFormat:@"%.0fm ago", floor(seconds / 60.0)];
-    if (seconds < 86400) return [NSString stringWithFormat:@"%.0fh ago", floor(seconds / 3600.0)];
-    return [NSString stringWithFormat:@"%.0fd ago", floor(seconds / 86400.0)];
+    if (seconds < 60) return CPT(zh, @"刚刚", @"just now");
+    if (seconds < 3600) return zh
+        ? [NSString stringWithFormat:@"%.0f 分钟前", floor(seconds / 60.0)]
+        : [NSString stringWithFormat:@"%.0fm ago", floor(seconds / 60.0)];
+    if (seconds < 86400) return zh
+        ? [NSString stringWithFormat:@"%.0f 小时前", floor(seconds / 3600.0)]
+        : [NSString stringWithFormat:@"%.0fh ago", floor(seconds / 3600.0)];
+    return zh
+        ? [NSString stringWithFormat:@"%.0f 天前", floor(seconds / 86400.0)]
+        : [NSString stringWithFormat:@"%.0fd ago", floor(seconds / 86400.0)];
 }
 
 static NSTextField *CPLabel(NSString *text, NSFont *font, NSColor *color, NSInteger lines) {
@@ -360,6 +397,7 @@ static CGFloat CPStatusTextWidth(NSString *text, NSDictionary *attributes) {
 @property(nonatomic, strong) NSArray *points;
 @property(nonatomic, strong) NSDictionary *quota;
 @property(nonatomic, copy) NSString *fetchedAt;
+@property(nonatomic, copy) NSString *emptyLabel;
 @end
 
 @implementation CPTrendChartView
@@ -468,7 +506,7 @@ static CGFloat CPStatusTextWidth(NSString *text, NSDictionary *attributes) {
             NSFontAttributeName: [NSFont systemFontOfSize:12 weight:NSFontWeightMedium],
             NSForegroundColorAttributeName: CPColor(0.73, 0.69, 0.62, 1.0),
         };
-        [@"No seven-day quota trend yet" drawInRect:plot withAttributes:attrs];
+        [(self.emptyLabel ?: @"No seven-day usage trend") drawInRect:plot withAttributes:attrs];
         return;
     }
 
@@ -571,6 +609,7 @@ static CGFloat CPStatusTextWidth(NSString *text, NSDictionary *attributes) {
 @property(nonatomic) CodexPacerSnapshotFree snapshotFree;
 @property(nonatomic) CodexPacerActionHandler actionHandler;
 @property(nonatomic) BOOL popupEnabled;
+@property(nonatomic, copy) NSString *displayLanguage;
 @end
 
 @implementation CPNativeMenuBarController
@@ -587,6 +626,7 @@ static CGFloat CPStatusTextWidth(NSString *text, NSDictionary *attributes) {
     self = [super init];
     if (self) {
         _popupEnabled = YES;
+        _displayLanguage = @"zh-CN";
         _panel = [[CPMenuBarPanel alloc] initWithContentRect:NSMakeRect(0, 0, CPPanelWidth, CPPanelHeight)
                                                    styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
                                                      backing:NSBackingStoreBuffered
@@ -606,6 +646,10 @@ static CGFloat CPStatusTextWidth(NSString *text, NSDictionary *attributes) {
         _panel.acceptsMouseMovedEvents = YES;
     }
     return self;
+}
+
+- (BOOL)usesChineseInterface {
+    return CPIsChineseLanguage(self.displayLanguage);
 }
 
 - (void)configureWithSnapshotProvider:(CodexPacerSnapshotProvider)provider
@@ -687,18 +731,21 @@ static CGFloat CPStatusTextWidth(NSString *text, NSDictionary *attributes) {
 
 - (void)showContextMenu {
     [self closePanel];
+    NSString *ignoredError = nil;
+    [self snapshotWithForceRefresh:NO error:&ignoredError];
+    BOOL zh = [self usesChineseInterface];
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Codex Pacer"];
-    NSMenuItem *showItem = [[NSMenuItem alloc] initWithTitle:@"Show Dashboard" action:@selector(openDashboard:) keyEquivalent:@""];
+    NSMenuItem *showItem = [[NSMenuItem alloc] initWithTitle:CPT(zh, @"显示主面板", @"Show dashboard") action:@selector(openDashboard:) keyEquivalent:@""];
     showItem.target = self;
     [menu addItem:showItem];
-    NSMenuItem *settingsItem = [[NSMenuItem alloc] initWithTitle:@"Settings" action:@selector(openSettings:) keyEquivalent:@""];
+    NSMenuItem *settingsItem = [[NSMenuItem alloc] initWithTitle:CPT(zh, @"设置", @"Settings") action:@selector(openSettings:) keyEquivalent:@""];
     settingsItem.target = self;
     [menu addItem:settingsItem];
-    NSMenuItem *refreshItem = [[NSMenuItem alloc] initWithTitle:@"Refresh" action:@selector(refreshButtonPressed:) keyEquivalent:@""];
+    NSMenuItem *refreshItem = [[NSMenuItem alloc] initWithTitle:CPT(zh, @"刷新", @"Refresh") action:@selector(refreshButtonPressed:) keyEquivalent:@""];
     refreshItem.target = self;
     [menu addItem:refreshItem];
     [menu addItem:NSMenuItem.separatorItem];
-    NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:@"Quit Codex Pacer" action:@selector(quitApp:) keyEquivalent:@""];
+    NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:CPT(zh, @"退出 Codex Pacer", @"Quit Codex Pacer") action:@selector(quitApp:) keyEquivalent:@""];
     quitItem.target = self;
     [menu addItem:quitItem];
     NSStatusBarButton *button = self.statusItem.button;
@@ -794,13 +841,14 @@ static CGFloat CPStatusTextWidth(NSString *text, NSDictionary *attributes) {
 }
 
 - (NSDictionary *)snapshotWithForceRefresh:(BOOL)forceRefresh error:(NSString **)errorOut {
+    BOOL zh = [self usesChineseInterface];
     if (!self.snapshotProvider) {
-        if (errorOut) *errorOut = @"Native snapshot bridge is unavailable.";
+        if (errorOut) *errorOut = CPT(zh, @"原生快照桥接不可用。", @"Native snapshot bridge is unavailable.");
         return nil;
     }
     char *raw = self.snapshotProvider(forceRefresh);
     if (!raw) {
-        if (errorOut) *errorOut = @"Rust snapshot provider returned no data.";
+        if (errorOut) *errorOut = CPT(zh, @"Rust 快照提供器没有返回数据。", @"Rust snapshot provider returned no data.");
         return nil;
     }
     NSString *json = [NSString stringWithUTF8String:raw] ?: @"";
@@ -815,13 +863,16 @@ static CGFloat CPStatusTextWidth(NSString *text, NSDictionary *attributes) {
         return nil;
     }
     if (![object isKindOfClass:NSDictionary.class]) {
-        if (errorOut) *errorOut = error.localizedDescription ?: @"Snapshot JSON is invalid.";
+        if (errorOut) *errorOut = error.localizedDescription ?: CPT(zh, @"快照 JSON 无效。", @"Snapshot JSON is invalid.");
         return nil;
     }
+    NSString *language = CPString(snapshot, @"displayLanguage");
+    if (language.length > 0) self.displayLanguage = language;
     return snapshot;
 }
 
 - (NSView *)buildPanelViewWithSnapshot:(NSDictionary *)snapshot error:(NSString *)error {
+    BOOL zh = snapshot ? CPIsChineseSnapshot(snapshot) : [self usesChineseInterface];
     NSVisualEffectView *root = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, CPPanelWidth, CPPanelHeight)];
     if (@available(macOS 10.14, *)) {
         root.material = (NSVisualEffectMaterial)13;
@@ -866,8 +917,8 @@ static CGFloat CPStatusTextWidth(NSString *text, NSDictionary *attributes) {
             [empty.centerYAnchor constraintEqualToAnchor:card.centerYAnchor],
             [empty.widthAnchor constraintLessThanOrEqualToConstant:330.0],
         ]];
-        [empty addArrangedSubview:CPLabel(@"No popup snapshot", [NSFont systemFontOfSize:17 weight:NSFontWeightSemibold], CPColor(0.98, 0.93, 0.84, 1.0), 1)];
-        [empty addArrangedSubview:CPLabel(error ?: @"Refresh or scan Codex usage to populate menu bar metrics.", [NSFont systemFontOfSize:12 weight:NSFontWeightMedium], CPColor(0.73, 0.69, 0.62, 1.0), 3)];
+        [empty addArrangedSubview:CPLabel(CPT(zh, @"暂无弹窗快照", @"No panel snapshot"), [NSFont systemFontOfSize:17 weight:NSFontWeightSemibold], CPColor(0.98, 0.93, 0.84, 1.0), 1)];
+        [empty addArrangedSubview:CPLabel(error ?: CPT(zh, @"请刷新或扫描 Codex 使用记录，以生成菜单栏指标。", @"Refresh or scan Codex usage to generate menu bar metrics."), [NSFont systemFontOfSize:12 weight:NSFontWeightMedium], CPColor(0.73, 0.69, 0.62, 1.0), 3)];
         [stack addArrangedSubview:card];
         return root;
     }
@@ -882,6 +933,7 @@ static CGFloat CPStatusTextWidth(NSString *text, NSDictionary *attributes) {
 }
 
 - (NSView *)buildHeaderForSnapshot:(NSDictionary *)snapshot {
+    BOOL zh = snapshot ? CPIsChineseSnapshot(snapshot) : [self usesChineseInterface];
     NSStackView *header = [[NSStackView alloc] init];
     header.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     header.alignment = NSLayoutAttributeCenterY;
@@ -906,9 +958,9 @@ static CGFloat CPStatusTextWidth(NSString *text, NSDictionary *attributes) {
     titles.spacing = 3.0;
     titles.translatesAutoresizingMaskIntoConstraints = NO;
     [titles addArrangedSubview:CPLabel(@"Codex Pacer", [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold], CPColor(0.98, 0.93, 0.84, 1.0), 1)];
-    NSString *bucket = CPBucketLabel(CPString(snapshot, @"selectedBucket") ?: @"month");
-    NSString *fetched = CPRelativeTime(CPString(snapshot, @"fetchedAt"));
-    [titles addArrangedSubview:CPLabel([NSString stringWithFormat:@"%@ · %@ · native panel", bucket, fetched], [NSFont systemFontOfSize:11 weight:NSFontWeightMedium], CPColor(0.73, 0.69, 0.62, 1.0), 1)];
+    NSString *bucket = CPBucketLabel(CPString(snapshot, @"selectedBucket") ?: @"month", zh);
+    NSString *fetched = CPRelativeTime(CPString(snapshot, @"fetchedAt"), zh);
+    [titles addArrangedSubview:CPLabel([NSString stringWithFormat:@"%@ · %@ · %@", bucket, fetched, CPT(zh, @"原生面板", @"native panel")], [NSFont systemFontOfSize:11 weight:NSFontWeightMedium], CPColor(0.73, 0.69, 0.62, 1.0), 1)];
     [header addArrangedSubview:titles];
     [titles setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
 
@@ -916,9 +968,9 @@ static CGFloat CPStatusTextWidth(NSString *text, NSDictionary *attributes) {
 
     NSNumber *showActions = CPNumber(snapshot, @"showActions");
     if (!showActions || showActions.boolValue) {
-        [header addArrangedSubview:[self iconButtonWithSymbol:@"chart.xyaxis.line" action:@selector(openDashboard:) tooltip:@"Open Dashboard"]];
-        [header addArrangedSubview:[self iconButtonWithSymbol:@"gearshape" action:@selector(openSettings:) tooltip:@"Settings"]];
-        [header addArrangedSubview:[self iconButtonWithSymbol:@"arrow.clockwise" action:@selector(refreshButtonPressed:) tooltip:@"Refresh"]];
+        [header addArrangedSubview:[self iconButtonWithSymbol:@"chart.xyaxis.line" action:@selector(openDashboard:) tooltip:CPT(zh, @"打开主面板", @"Open dashboard")]];
+        [header addArrangedSubview:[self iconButtonWithSymbol:@"gearshape" action:@selector(openSettings:) tooltip:CPT(zh, @"设置", @"Settings")]];
+        [header addArrangedSubview:[self iconButtonWithSymbol:@"arrow.clockwise" action:@selector(refreshButtonPressed:) tooltip:CPT(zh, @"刷新", @"Refresh")]];
     }
     return header;
 }
@@ -948,13 +1000,14 @@ static CGFloat CPStatusTextWidth(NSString *text, NSDictionary *attributes) {
 }
 
 - (NSView *)buildQuotaRow:(NSDictionary *)snapshot {
+    BOOL zh = CPIsChineseSnapshot(snapshot);
     NSStackView *row = [[NSStackView alloc] init];
     row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     row.spacing = 12.0;
     row.translatesAutoresizingMaskIntoConstraints = NO;
     [row.widthAnchor constraintEqualToConstant:CPPanelWidth - 28.0].active = YES;
-    [row addArrangedSubview:[self quotaCardWithTitle:@"5h" quota:CPAsDictionary(snapshot[@"quota5h"]) accent:CPColor(1.0, 0.70, 0.42, 1.0)]];
-    [row addArrangedSubview:[self quotaCardWithTitle:@"7d" quota:CPAsDictionary(snapshot[@"quota7d"]) accent:CPColor(0.47, 0.77, 1.0, 1.0)]];
+    [row addArrangedSubview:[self quotaCardWithTitle:CPT(zh, @"5小时", @"5h") quota:CPAsDictionary(snapshot[@"quota5h"]) accent:CPColor(1.0, 0.70, 0.42, 1.0)]];
+    [row addArrangedSubview:[self quotaCardWithTitle:CPT(zh, @"7天", @"7d") quota:CPAsDictionary(snapshot[@"quota7d"]) accent:CPColor(0.47, 0.77, 1.0, 1.0)]];
     return row;
 }
 
@@ -988,6 +1041,7 @@ static CGFloat CPStatusTextWidth(NSString *text, NSDictionary *attributes) {
 }
 
 - (NSView *)buildTrendCard:(NSDictionary *)snapshot {
+    BOOL zh = CPIsChineseSnapshot(snapshot);
     NSView *card = CPCardView(20.0);
     [card.widthAnchor constraintEqualToConstant:CPPanelWidth - 28.0].active = YES;
     [card.heightAnchor constraintEqualToConstant:184.0].active = YES;
@@ -1012,7 +1066,7 @@ static CGFloat CPStatusTextWidth(NSString *text, NSDictionary *attributes) {
     header.spacing = 8.0;
     header.translatesAutoresizingMaskIntoConstraints = NO;
     [header.widthAnchor constraintEqualToConstant:CPPanelWidth - 48.0].active = YES;
-    [header addArrangedSubview:CPLabel(@"Seven-day usage trend", [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold], CPColor(0.98, 0.93, 0.84, 1.0), 1)];
+    [header addArrangedSubview:CPLabel(CPT(zh, @"7天额度趋势", @"Seven-day usage trend"), [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold], CPColor(0.98, 0.93, 0.84, 1.0), 1)];
     NSView *spacer = [NSView new];
     [spacer setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     [header addArrangedSubview:spacer];
@@ -1020,12 +1074,12 @@ static CGFloat CPStatusTextWidth(NSString *text, NSDictionary *attributes) {
     NSArray *trend = CPAsArray(snapshot[@"quotaTrend7d"]);
     NSDictionary *quota7d = CPAsDictionary(snapshot[@"quota7d"]);
     double apiValue = [self sevenDayApiValueForTrend:trend snapshot:snapshot quota:quota7d];
-    [header addArrangedSubview:[self trendBadgeWithEmoji:@"💵" label:@"7d value" value:CPUSD(apiValue) borderColor:CPColor(1.0, 0.70, 0.42, 0.42)]];
+    [header addArrangedSubview:[self trendBadgeWithEmoji:@"💵" label:CPT(zh, @"7天价值", @"7d value") value:CPUSD(apiValue) borderColor:CPColor(1.0, 0.70, 0.42, 0.42) emptyValue:CPT(zh, @"无数据", @"No data")]];
     NSDictionary *speed = CPAsDictionary(snapshot[@"suggestedSpeed7d"]);
     NSString *speedValue = CPString(speed, @"displayValue");
     if (speedValue.length > 0) {
         NSString *emoji = CPString(speed, @"emoji") ?: @"";
-        [header addArrangedSubview:[self trendBadgeWithEmoji:emoji label:nil value:speedValue borderColor:[self speedBadgeBorderColor:CPString(speed, @"status")]]];
+        [header addArrangedSubview:[self trendBadgeWithEmoji:emoji label:nil value:speedValue borderColor:[self speedBadgeBorderColor:CPString(speed, @"status")] emptyValue:CPT(zh, @"无数据", @"No data")]];
     }
     [stack addArrangedSubview:header];
 
@@ -1033,6 +1087,7 @@ static CGFloat CPStatusTextWidth(NSString *text, NSDictionary *attributes) {
     chart.points = trend;
     chart.quota = quota7d;
     chart.fetchedAt = CPString(snapshot, @"liveQuotaFetchedAt") ?: CPString(snapshot, @"fetchedAt");
+    chart.emptyLabel = CPT(zh, @"暂无 7 天额度趋势", @"No seven-day usage trend");
     chart.translatesAutoresizingMaskIntoConstraints = NO;
     [chart.heightAnchor constraintEqualToConstant:108.0].active = YES;
     [chart.widthAnchor constraintEqualToConstant:CPPanelWidth - 48.0].active = YES;
@@ -1044,14 +1099,14 @@ static CGFloat CPStatusTextWidth(NSString *text, NSDictionary *attributes) {
     legend.spacing = 12.0;
     legend.translatesAutoresizingMaskIntoConstraints = NO;
     [legend.widthAnchor constraintLessThanOrEqualToConstant:CPPanelWidth - 48.0].active = YES;
-    [legend addArrangedSubview:[self trendLegendItemWithTitle:@"Remaining" kind:@"remaining"]];
-    [legend addArrangedSubview:[self trendLegendItemWithTitle:@"Reference" kind:@"reference"]];
-    [legend addArrangedSubview:[self trendLegendItemWithTitle:@"Current" kind:@"current"]];
+    [legend addArrangedSubview:[self trendLegendItemWithTitle:CPT(zh, @"剩余", @"Remaining") kind:@"remaining"]];
+    [legend addArrangedSubview:[self trendLegendItemWithTitle:CPT(zh, @"参考", @"Reference") kind:@"reference"]];
+    [legend addArrangedSubview:[self trendLegendItemWithTitle:CPT(zh, @"当前", @"Current") kind:@"current"]];
     [stack addArrangedSubview:legend];
     return card;
 }
 
-- (NSView *)trendBadgeWithEmoji:(NSString *)emoji label:(NSString *)label value:(NSString *)value borderColor:(NSColor *)borderColor {
+- (NSView *)trendBadgeWithEmoji:(NSString *)emoji label:(NSString *)label value:(NSString *)value borderColor:(NSColor *)borderColor emptyValue:(NSString *)emptyValue {
     NSView *badge = [[NSView alloc] initWithFrame:NSZeroRect];
     badge.translatesAutoresizingMaskIntoConstraints = NO;
     badge.wantsLayer = YES;
@@ -1081,7 +1136,7 @@ static CGFloat CPStatusTextWidth(NSString *text, NSDictionary *attributes) {
     if (label.length > 0) {
         [stack addArrangedSubview:CPLabel(label, [NSFont systemFontOfSize:10 weight:NSFontWeightMedium], CPColor(0.73, 0.69, 0.62, 1.0), 1)];
     }
-    [stack addArrangedSubview:CPLabel(value ?: @"n/a", [NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightSemibold], CPColor(1.0, 0.97, 0.91, 1.0), 1)];
+    [stack addArrangedSubview:CPLabel(value ?: (emptyValue ?: @"No data"), [NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightSemibold], CPColor(1.0, 0.97, 0.91, 1.0), 1)];
     return badge;
 }
 
@@ -1131,13 +1186,14 @@ static CGFloat CPStatusTextWidth(NSString *text, NSDictionary *attributes) {
 }
 
 - (NSView *)buildResetRow:(NSDictionary *)snapshot {
+    BOOL zh = CPIsChineseSnapshot(snapshot);
     NSStackView *row = [[NSStackView alloc] init];
     row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     row.spacing = 8.0;
     row.translatesAutoresizingMaskIntoConstraints = NO;
     [row.widthAnchor constraintEqualToConstant:CPPanelWidth - 28.0].active = YES;
-    [row addArrangedSubview:[self pillWithLabel:@"5h reset" value:CPShortDateTime(CPString(CPAsDictionary(snapshot[@"quota5h"]), @"resetsAt"))]];
-    [row addArrangedSubview:[self pillWithLabel:@"7d reset" value:CPShortDateTime(CPString(CPAsDictionary(snapshot[@"quota7d"]), @"resetsAt"))]];
+    [row addArrangedSubview:[self pillWithLabel:CPT(zh, @"5小时重置", @"5h reset") value:CPShortDateTime(CPString(CPAsDictionary(snapshot[@"quota5h"]), @"resetsAt"), zh)]];
+    [row addArrangedSubview:[self pillWithLabel:CPT(zh, @"7天重置", @"7d reset") value:CPShortDateTime(CPString(CPAsDictionary(snapshot[@"quota7d"]), @"resetsAt"), zh)]];
     return row;
 }
 
@@ -1162,20 +1218,21 @@ static CGFloat CPStatusTextWidth(NSString *text, NSDictionary *attributes) {
 }
 
 - (NSView *)buildModuleGrid:(NSDictionary *)snapshot {
+    BOOL zh = CPIsChineseSnapshot(snapshot);
     NSStackView *grid = [[NSStackView alloc] init];
     grid.orientation = NSUserInterfaceLayoutOrientationVertical;
     grid.spacing = 8.0;
     grid.translatesAutoresizingMaskIntoConstraints = NO;
     [grid.widthAnchor constraintEqualToConstant:CPPanelWidth - 28.0].active = YES;
 
-    NSString *bucket = CPBucketLabel(CPString(snapshot, @"selectedBucket"));
+    NSString *bucket = CPBucketLabel(CPString(snapshot, @"selectedBucket"), zh);
     NSDictionary *descriptors = @{
-        @"api_value": @[@"Selected bucket", CPUSD([CPNumber(snapshot, @"apiValueSelectedBucket") doubleValue]), bucket ?: @""],
-        @"token_count": @[@"Tokens", CPCompactInteger([CPNumber(snapshot, @"totalTokensSelectedBucket") longLongValue]), bucket ?: @""],
-        @"conversation_count": @[@"Conversations", [NSString stringWithFormat:@"%lld", [CPNumber(snapshot, @"conversationCountSelectedBucket") longLongValue]], bucket ?: @""],
-        @"payoff_ratio": @[@"Payoff", CPPercentRatio([CPNumber(snapshot, @"payoffRatio") doubleValue]), @"API value / subscription"],
-        @"scan_freshness": @[@"Last scan", CPRelativeTime(CPString(snapshot, @"lastScanCompletedAt")), CPShortDateTime(CPString(snapshot, @"lastScanCompletedAt"))],
-        @"live_quota_freshness": @[@"Live quota", CPRelativeTime(CPString(snapshot, @"liveQuotaFetchedAt")), CPShortDateTime(CPString(snapshot, @"liveQuotaFetchedAt"))],
+        @"api_value": @[CPT(zh, @"当前范围", @"Selected bucket"), CPUSD([CPNumber(snapshot, @"apiValueSelectedBucket") doubleValue]), bucket ?: @""],
+        @"token_count": @[CPT(zh, @"Token 数", @"Tokens"), CPCompactInteger([CPNumber(snapshot, @"totalTokensSelectedBucket") longLongValue], zh), bucket ?: @""],
+        @"conversation_count": @[CPT(zh, @"对话数", @"Conversations"), [NSString stringWithFormat:@"%lld", [CPNumber(snapshot, @"conversationCountSelectedBucket") longLongValue]], bucket ?: @""],
+        @"payoff_ratio": @[CPT(zh, @"回本率", @"Payoff"), CPPercentRatio([CPNumber(snapshot, @"payoffRatio") doubleValue]), CPT(zh, @"API 价值 / 订阅费", @"API value / subscription")],
+        @"scan_freshness": @[CPT(zh, @"上次扫描", @"Last scan"), CPRelativeTime(CPString(snapshot, @"lastScanCompletedAt"), zh), CPShortDateTime(CPString(snapshot, @"lastScanCompletedAt"), zh)],
+        @"live_quota_freshness": @[CPT(zh, @"额度刷新", @"Live quota"), CPRelativeTime(CPString(snapshot, @"liveQuotaFetchedAt"), zh), CPShortDateTime(CPString(snapshot, @"liveQuotaFetchedAt"), zh)],
     };
     NSArray *fallbackModuleIds = @[
         @"api_value",

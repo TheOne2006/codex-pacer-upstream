@@ -46,6 +46,42 @@ fn serialize_menu_bar_popup_modules(modules: &[String]) -> String {
     serde_json::to_string(modules).unwrap_or_else(|_| default_menu_bar_popup_modules_json())
 }
 
+fn normalize_display_language(value: &str) -> String {
+    match value {
+        "en" => "en".to_string(),
+        "zh-CN" => "zh-CN".to_string(),
+        _ => "zh-CN".to_string(),
+    }
+}
+
+pub fn get_display_language(conn: &Connection) -> rusqlite::Result<String> {
+    let value: String = conn.query_row(
+        "
+    SELECT display_language
+    FROM sync_settings
+    WHERE singleton_id = 1
+    ",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(normalize_display_language(&value))
+}
+
+pub fn set_display_language(conn: &Connection, language: &str) -> rusqlite::Result<String> {
+    let normalized = normalize_display_language(language);
+    let updated_at = now_utc_string();
+    conn.execute(
+        "
+    UPDATE sync_settings
+    SET display_language = ?1,
+        updated_at = ?2
+    WHERE singleton_id = 1
+    ",
+        params![normalized, updated_at],
+    )?;
+    get_display_language(conn)
+}
+
 pub fn get_sync_settings(conn: &Connection) -> rusqlite::Result<SyncSettings> {
     conn.query_row(
         "

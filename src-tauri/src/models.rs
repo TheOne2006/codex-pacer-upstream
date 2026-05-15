@@ -373,6 +373,7 @@ pub struct MenuBarPopupSuggestedSpeed {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MenuBarPopupSnapshot {
+    pub display_language: String,
     pub fetched_at: String,
     pub refresh_interval_seconds: i64,
     pub selected_bucket: String,

@@ -359,6 +359,10 @@ export async function updateSyncSettings(payload: SyncSettings) {
   return invokeOrMock('updateSyncSettings', { payload }, () => payload)
 }
 
+export async function updateDisplayLanguage(language: 'zh-CN' | 'en') {
+  return invokeOrMock('updateDisplayLanguage', { language }, () => language)
+}
+
 export async function getSubscriptionProfile() {
   return invokeOrMock('getSubscriptionProfile', {}, createMockSubscriptionProfile)
 }

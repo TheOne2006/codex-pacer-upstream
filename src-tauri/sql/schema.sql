@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS sync_settings (
   menu_bar_popup_modules TEXT NOT NULL DEFAULT '[\"api_value\",\"scan_freshness\"]',
   menu_bar_popup_show_reset_timeline INTEGER NOT NULL DEFAULT 1,
   menu_bar_popup_show_actions INTEGER NOT NULL DEFAULT 1,
+  display_language TEXT NOT NULL DEFAULT 'zh-CN',
   last_scan_started_at TEXT,
   last_scan_completed_at TEXT,
   updated_at TEXT NOT NULL

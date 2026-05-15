@@ -20,10 +20,10 @@ use chrono::{DateTime, Duration as ChronoDuration, Local};
 use database::{
     canonical_subscription_currency, create_subscription_record,
     delete_codex_source as delete_codex_source_record, delete_subscription_record,
-    get_subscription_profile, get_sync_settings, init_db, insert_live_rate_limit_snapshot,
-    list_codex_sources, list_subscription_records, open_connection, save_subscription_profile,
-    save_sync_settings, set_codex_source_selected, update_subscription_record,
-    upsert_ssh_codex_source,
+    get_display_language, get_subscription_profile, get_sync_settings, init_db,
+    insert_live_rate_limit_snapshot, list_codex_sources, list_subscription_records,
+    open_connection, save_subscription_profile, save_sync_settings, set_codex_source_selected,
+    set_display_language, update_subscription_record, upsert_ssh_codex_source,
 };
 use importer::{perform_scan, perform_scan_for_source, recalculate_all_session_values};
 use models::{
@@ -385,6 +385,13 @@ fn updateSyncSettings(
     refresh_daily_value_menu_bar(state.inner());
     sync_dock_icon_visibility(&app, state.inner());
     Ok(saved)
+}
+
+#[allow(non_snake_case)]
+#[tauri::command(rename_all = "camelCase")]
+fn updateDisplayLanguage(state: State<'_, AppState>, language: String) -> Result<String, String> {
+    let conn = open_connection(&state.db_path).map_err(|error| error.to_string())?;
+    set_display_language(&conn, &language).map_err(|error| error.to_string())
 }
 
 #[allow(non_snake_case)]
@@ -1295,6 +1302,7 @@ fn build_menu_bar_popup_snapshot(
     };
 
     Ok(MenuBarPopupSnapshot {
+        display_language: get_display_language(&conn).unwrap_or_else(|_| "zh-CN".to_string()),
         fetched_at: Local::now().to_rfc3339(),
         refresh_interval_seconds: settings.live_quota_refresh_interval_seconds,
         selected_bucket,
@@ -1591,6 +1599,7 @@ pub fn run() {
             getConversationDetail,
             getSyncSettings,
             updateSyncSettings,
+            updateDisplayLanguage,
             getSubscriptionProfile,
             updateSubscriptionProfile,
             listSubscriptionRecords,

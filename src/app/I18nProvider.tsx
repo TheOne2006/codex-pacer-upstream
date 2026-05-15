@@ -8,12 +8,16 @@ import {
   type I18nShape,
 } from './i18n'
 import { I18nContext } from './I18nContext'
+import { updateDisplayLanguage } from './api'
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [language, setLanguage] = useState(readStoredLanguage)
 
   useEffect(() => {
     window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language)
+    void updateDisplayLanguage(language).catch((error) => {
+      console.warn('Failed to persist display language for native panel', error)
+    })
   }, [language])
 
   const value: I18nShape = {

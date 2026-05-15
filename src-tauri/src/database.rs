@@ -20,7 +20,8 @@ pub use subscriptions::{
     update_subscription_record,
 };
 pub use sync_settings::{
-    get_sync_settings, save_sync_settings, set_last_scan_completed, set_last_scan_started,
+    get_display_language, get_sync_settings, save_sync_settings, set_display_language,
+    set_last_scan_completed, set_last_scan_started,
 };
 
 pub fn now_utc_string() -> String {
@@ -51,10 +52,26 @@ pub fn open_connection(db_path: &Path) -> rusqlite::Result<Connection> {
 pub fn init_db(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(include_str!("../sql/schema.sql"))?;
 
+    ensure_sync_settings_schema(conn)?;
     ensure_singletons(conn)?;
     ensure_local_codex_source(conn, None)?;
 
     conn.execute_batch(include_str!("../sql/indexes.sql"))?;
+    Ok(())
+}
+
+fn ensure_sync_settings_schema(conn: &Connection) -> rusqlite::Result<()> {
+    let has_display_language: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('sync_settings') WHERE name = 'display_language'",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_display_language == 0 {
+        conn.execute(
+            "ALTER TABLE sync_settings ADD COLUMN display_language TEXT NOT NULL DEFAULT 'zh-CN'",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -89,7 +106,7 @@ fn ensure_singletons(conn: &Connection) -> rusqlite::Result<()> {
       menu_bar_popup_show_reset_timeline, menu_bar_popup_show_actions,
       last_scan_started_at, last_scan_completed_at, updated_at
     )
-    VALUES (1, 3, NULL, 1, 5, 300, 1, 1, 1, 0, 'remaining_percent', 'five_hour', 'day', 1, 85, 115, '🟢', '🔥', '🐢', 1, ?2, 1, 1, NULL, NULL, ?1)
+    VALUES (1, 4, NULL, 1, 5, 300, 1, 1, 1, 0, 'remaining_percent', 'five_hour', 'day', 1, 85, 115, '🟢', '🔥', '🐢', 1, ?2, 1, 1, NULL, NULL, ?1)
     ON CONFLICT(singleton_id) DO NOTHING
     ",
         params![now, sync_settings::default_menu_bar_popup_modules_json()],
@@ -98,7 +115,19 @@ fn ensure_singletons(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute(
         "
     UPDATE sync_settings
-    SET sync_settings_schema_version = 3,
+    SET sync_settings_schema_version = 4,
+        updated_at = ?1
+    WHERE singleton_id = 1
+      AND sync_settings_schema_version >= 3
+      AND sync_settings_schema_version < 4
+    ",
+        params![now],
+    )?;
+
+    conn.execute(
+        "
+    UPDATE sync_settings
+    SET sync_settings_schema_version = 4,
         hide_dock_icon_when_menu_bar_visible = 1,
         updated_at = ?1
     WHERE singleton_id = 1
