@@ -329,6 +329,13 @@ export type TranslationSet = {
         eyebrow: string
         title: string
         description: string
+        credits: string
+        creditsNoInfo: string
+        creditsNone: string
+        creditsAvailable: string
+        creditsUnlimited: string
+        creditsBalance: (value: string) => string
+        reachedType: (value: string) => string
         remaining: (value: string) => string
         timeLeft: (value: string) => string
       }

@@ -6,10 +6,12 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use chrono::{Local, LocalResult, TimeZone, Timelike};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
 
-use crate::models::{CodexAccountStatus, LiveRateLimitSnapshot, RateLimitWindowSnapshot};
+use crate::models::{
+    CodexAccountStatus, LiveRateLimitSnapshot, RateLimitCreditsSnapshot, RateLimitWindowSnapshot,
+};
 
 const APP_SERVER_TIMEOUT: Duration = Duration::from_secs(5);
 const INIT_REQUEST_ID: &str = "codex-counter.init";
@@ -19,24 +21,61 @@ const ACCOUNT_READ_REQUEST_ID: &str = "codex-counter.account-read";
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AppServerRateLimitWindow {
-    used_percent: i64,
+    #[serde(
+        default,
+        alias = "used_percent",
+        deserialize_with = "deserialize_optional_i64"
+    )]
+    used_percent: Option<i64>,
+    #[serde(
+        default,
+        alias = "window_duration_mins",
+        alias = "window_minutes",
+        deserialize_with = "deserialize_optional_i64"
+    )]
     window_duration_mins: Option<i64>,
+    #[serde(
+        default,
+        alias = "resets_at",
+        deserialize_with = "deserialize_optional_i64"
+    )]
     resets_at: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct AppServerRateLimitCredits {
+    #[serde(default, alias = "has_credits")]
+    has_credits: Option<bool>,
+    #[serde(default)]
+    unlimited: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_optional_json_string")]
+    balance: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct AppServerRateLimitSnapshot {
+    #[serde(default, alias = "limit_id")]
     limit_id: Option<String>,
+    #[serde(default, alias = "limit_name")]
     limit_name: Option<String>,
+    #[serde(default, alias = "plan_type")]
     plan_type: Option<String>,
+    #[serde(default)]
+    credits: Option<AppServerRateLimitCredits>,
+    #[serde(default, alias = "rate_limit_reached_type")]
+    rate_limit_reached_type: Option<String>,
+    #[serde(default)]
     primary: Option<AppServerRateLimitWindow>,
+    #[serde(default)]
     secondary: Option<AppServerRateLimitWindow>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AppServerRateLimitReadResponse {
+    #[serde(alias = "rate_limits")]
     rate_limits: AppServerRateLimitSnapshot,
 }
 
@@ -406,8 +445,10 @@ fn convert_live_rate_limits(snapshot: AppServerRateLimitSnapshot) -> LiveRateLim
         limit_id: snapshot.limit_id,
         limit_name: snapshot.limit_name,
         plan_type: snapshot.plan_type,
-        primary: snapshot.primary.map(convert_window),
-        secondary: snapshot.secondary.map(convert_window),
+        credits: snapshot.credits.map(convert_credits),
+        rate_limit_reached_type: snapshot.rate_limit_reached_type,
+        primary: snapshot.primary.and_then(convert_window),
+        secondary: snapshot.secondary.and_then(convert_window),
         fetched_at: Local::now().to_rfc3339(),
     }
 }
@@ -443,7 +484,16 @@ fn convert_account_status(result: &Value) -> Result<CodexAccountStatus, String> 
     })
 }
 
-fn convert_window(window: AppServerRateLimitWindow) -> RateLimitWindowSnapshot {
+fn convert_credits(credits: AppServerRateLimitCredits) -> RateLimitCreditsSnapshot {
+    RateLimitCreditsSnapshot {
+        has_credits: credits.has_credits,
+        unlimited: credits.unlimited,
+        balance: credits.balance,
+    }
+}
+
+fn convert_window(window: AppServerRateLimitWindow) -> Option<RateLimitWindowSnapshot> {
+    let used_percent = window.used_percent?;
     let resets_at = window
         .resets_at
         .and_then(|value| unix_seconds_to_rfc3339(value).ok());
@@ -454,13 +504,38 @@ fn convert_window(window: AppServerRateLimitWindow) -> RateLimitWindowSnapshot {
         _ => None,
     };
 
-    RateLimitWindowSnapshot {
-        used_percent: window.used_percent.clamp(0, 100),
-        remaining_percent: (100 - window.used_percent).clamp(0, 100),
+    Some(RateLimitWindowSnapshot {
+        used_percent: used_percent.clamp(0, 100),
+        remaining_percent: (100 - used_percent).clamp(0, 100),
         window_duration_mins: window.window_duration_mins,
         resets_at,
         window_start,
-    }
+    })
+}
+
+fn deserialize_optional_i64<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| {
+        value
+            .as_i64()
+            .or_else(|| value.as_f64().map(|number| number.round() as i64))
+            .or_else(|| value.as_str().and_then(|text| text.parse::<i64>().ok()))
+    }))
+}
+
+fn deserialize_optional_json_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| match value {
+        Value::Null => None,
+        Value::String(text) => Some(text),
+        other => Some(other.to_string()),
+    }))
 }
 
 fn unix_seconds_to_rfc3339(value: i64) -> Result<String, String> {
@@ -567,7 +642,8 @@ fn fallback_codex_binary() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::convert_window;
+    use super::*;
+    use serde_json::json;
     #[cfg(windows)]
     use std::ffi::OsString;
     #[cfg(windows)]
@@ -584,16 +660,94 @@ mod tests {
     #[test]
     fn convert_window_calculates_remaining_and_start() {
         let converted = convert_window(super::AppServerRateLimitWindow {
-            used_percent: 13,
+            used_percent: Some(13),
             window_duration_mins: Some(300),
             resets_at: Some(1_774_513_656),
-        });
+        })
+        .expect("converted window");
 
         assert_eq!(converted.used_percent, 13);
         assert_eq!(converted.remaining_percent, 87);
         assert_eq!(converted.window_duration_mins, Some(300));
         assert!(converted.resets_at.is_some());
         assert!(converted.window_start.is_some());
+    }
+
+    #[test]
+    fn app_server_decode_accepts_camel_case_credits_metadata() {
+        let response = serde_json::from_value::<AppServerRateLimitReadResponse>(json!({
+            "rateLimits": {
+                "limitId": "codex-primary",
+                "limitName": "Codex Primary",
+                "planType": "pro",
+                "rateLimitReachedType": "primary",
+                "credits": {
+                    "hasCredits": true,
+                    "unlimited": false,
+                    "balance": "trial-balance-42"
+                },
+                "primary": {
+                    "usedPercent": 17,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1774513656,
+                    "ignoredFutureField": {"nested": true}
+                },
+                "futureField": "ignored"
+            }
+        }))
+        .expect("decode camelCase response");
+
+        let snapshot = convert_live_rate_limits(response.rate_limits);
+
+        assert_eq!(snapshot.limit_id.as_deref(), Some("codex-primary"));
+        assert_eq!(snapshot.plan_type.as_deref(), Some("pro"));
+        assert_eq!(snapshot.rate_limit_reached_type.as_deref(), Some("primary"));
+        assert_eq!(
+            snapshot.primary.as_ref().map(|window| window.used_percent),
+            Some(17)
+        );
+        assert_eq!(
+            snapshot
+                .credits
+                .as_ref()
+                .and_then(|credits| credits.balance.as_deref()),
+            Some("trial-balance-42")
+        );
+    }
+
+    #[test]
+    fn app_server_decode_accepts_snake_case_aliases_and_null_credits() {
+        let response = serde_json::from_value::<AppServerRateLimitReadResponse>(json!({
+            "rate_limits": {
+                "limit_id": "codex-secondary",
+                "limit_name": "Codex Secondary",
+                "plan_type": "pro",
+                "rate_limit_reached_type": "secondary",
+                "credits": null,
+                "secondary": {
+                    "used_percent": 26.4,
+                    "window_duration_mins": 10080,
+                    "resets_at": 1774589128
+                }
+            }
+        }))
+        .expect("decode snake_case response");
+
+        let snapshot = convert_live_rate_limits(response.rate_limits);
+
+        assert!(snapshot.credits.is_none());
+        assert_eq!(
+            snapshot.rate_limit_reached_type.as_deref(),
+            Some("secondary")
+        );
+        assert_eq!(
+            snapshot
+                .secondary
+                .as_ref()
+                .map(|window| window.used_percent),
+            Some(26)
+        );
+        assert!(snapshot.primary.is_none());
     }
 
     #[test]

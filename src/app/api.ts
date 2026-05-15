@@ -113,6 +113,8 @@ function createMockLiveRateLimits(): LiveRateLimitSnapshot {
     limitId: null,
     limitName: null,
     planType: null,
+    credits: null,
+    rateLimitReachedType: null,
     primary: null,
     secondary: null,
     fetchedAt: nowIso(),

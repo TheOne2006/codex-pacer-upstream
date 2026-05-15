@@ -2763,6 +2763,14 @@ select:focus-visible {
   font-family: 'Fira Code', monospace;
 }
 
+.live-quota-row--metadata {
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.live-quota-warning {
+  color: var(--accent-amber);
+}
+
 .subscription-account-card,
 .subscription-record-card {
   display: grid;

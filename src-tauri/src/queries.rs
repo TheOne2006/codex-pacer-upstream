@@ -1874,11 +1874,12 @@ fn build_bins(window: &Window) -> Vec<TrendBin> {
                 local_midnight(next_date).unwrap_or(window.end)
             }
             "custom" => current + chrono::Duration::days(1),
-            "year" | "total" => {
+            "year" => {
                 let current_date = current.date_naive();
                 let next_date = add_months(current_date, 1);
                 local_midnight(next_date).unwrap_or(window.end)
             }
+            "total" => next_calendar_month_boundary(current, window.end),
             _ => window.end,
         };
 
@@ -1911,6 +1912,19 @@ fn custom_window_uses_hourly_bins(window: &Window) -> bool {
 
 fn custom_window_uses_monthly_bins(window: &Window) -> bool {
     window.end.signed_duration_since(window.start) > chrono::Duration::days(62)
+}
+
+fn next_calendar_month_boundary(
+    current: DateTime<Local>,
+    fallback: DateTime<Local>,
+) -> DateTime<Local> {
+    let current_date = current.date_naive();
+    let Some(first_of_month) =
+        NaiveDate::from_ymd_opt(current_date.year(), current_date.month(), 1)
+    else {
+        return fallback;
+    };
+    local_midnight(add_months(first_of_month, 1)).unwrap_or(fallback)
 }
 
 fn subscription_cost_for_window(window: &Window, records: &[SubscriptionRecord]) -> f64 {
@@ -2794,6 +2808,31 @@ mod tests {
     }
 
     #[test]
+    fn total_trend_bins_follow_calendar_months() {
+        let window = Window {
+            bucket: "total".to_string(),
+            anchor: "2026-03-19".to_string(),
+            start: local_time("2026-03-19T00:00:00+08:00"),
+            end: local_time("2026-05-16T00:00:00+08:00"),
+        };
+
+        let bins = build_bins(&window);
+
+        assert_eq!(
+            bins.iter()
+                .map(|bin| bin.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Mar 2026", "Apr 2026", "May 2026"]
+        );
+        assert_eq!(bins[0].start.to_rfc3339(), "2026-03-19T00:00:00+08:00");
+        assert_eq!(bins[0].end.to_rfc3339(), "2026-04-01T00:00:00+08:00");
+        assert_eq!(bins[1].start.to_rfc3339(), "2026-04-01T00:00:00+08:00");
+        assert_eq!(bins[1].end.to_rfc3339(), "2026-05-01T00:00:00+08:00");
+        assert_eq!(bins[2].start.to_rfc3339(), "2026-05-01T00:00:00+08:00");
+        assert_eq!(bins[2].end.to_rfc3339(), "2026-05-16T00:00:00+08:00");
+    }
+
+    #[test]
     fn subscription_cost_is_zero_without_records() {
         let window = Window {
             bucket: "day".to_string(),
@@ -2813,6 +2852,8 @@ mod tests {
             limit_id: Some("codex".to_string()),
             limit_name: None,
             plan_type: Some("pro".to_string()),
+            credits: None,
+            rate_limit_reached_type: None,
             primary: Some(crate::models::RateLimitWindowSnapshot {
                 used_percent: 8,
                 remaining_percent: 92,
@@ -2855,6 +2896,8 @@ mod tests {
             limit_id: Some("codex".to_string()),
             limit_name: None,
             plan_type: Some("pro".to_string()),
+            credits: None,
+            rate_limit_reached_type: None,
             primary: Some(crate::models::RateLimitWindowSnapshot {
                 used_percent: 22,
                 remaining_percent: 78,
@@ -2869,6 +2912,8 @@ mod tests {
             limit_id: Some("codex".to_string()),
             limit_name: None,
             plan_type: Some("pro".to_string()),
+            credits: None,
+            rate_limit_reached_type: None,
             primary: Some(crate::models::RateLimitWindowSnapshot {
                 used_percent: 48,
                 remaining_percent: 52,

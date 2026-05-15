@@ -139,6 +139,23 @@ CREATE TABLE IF NOT EXISTS rate_limit_samples (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS rate_limit_metadata_samples (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id TEXT NOT NULL DEFAULT 'local',
+  source_kind TEXT NOT NULL,
+  source_session_id TEXT NOT NULL DEFAULT '',
+  sample_timestamp TEXT NOT NULL,
+  limit_id TEXT NOT NULL DEFAULT '',
+  limit_name TEXT NOT NULL DEFAULT '',
+  plan_type TEXT NOT NULL DEFAULT '',
+  credits_has_credits INTEGER,
+  credits_unlimited INTEGER,
+  credits_balance TEXT,
+  rate_limit_reached_type TEXT NOT NULL DEFAULT '',
+  raw_rate_limits_json TEXT,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS codex_sources (
   id TEXT PRIMARY KEY,
   kind TEXT NOT NULL,

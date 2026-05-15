@@ -9,6 +9,7 @@ import type {
   LiveRateLimitSnapshot,
   MenuBarPopupModuleId,
   OverviewBucket,
+  RateLimitCreditsSnapshot,
   SubscriptionRecord,
   SubscriptionRecordInput,
   SyncSettings,
@@ -157,6 +158,27 @@ function formatAccountStatus(
     accountStatus.email ? maskEmail(accountStatus.email) : null,
   ].filter(Boolean)
   return parts.join(' / ') || labels.accountUnknown
+}
+
+function formatCreditsStatus(
+  credits: RateLimitCreditsSnapshot | null | undefined,
+  labels: {
+    creditsNoInfo: string
+    creditsNone: string
+    creditsAvailable: string
+    creditsUnlimited: string
+    creditsBalance: (value: string) => string
+  },
+) {
+  if (!credits) return labels.creditsNoInfo
+  const status = credits.unlimited
+    ? labels.creditsUnlimited
+    : credits.hasCredits === false
+      ? labels.creditsNone
+      : credits.hasCredits === true
+        ? labels.creditsAvailable
+        : labels.creditsNoInfo
+  return credits.balance ? `${status} · ${labels.creditsBalance(credits.balance)}` : status
 }
 
 function refreshSecondsToMinutes(seconds: number) {
@@ -1080,6 +1102,17 @@ export function SettingsPanel({
                         {t.settings.sections.liveQuota.timeLeft(
                           formatRemainingDuration(liveRateLimits.secondary?.resetsAt ?? null, language),
                         )}
+                      </span>
+                    </div>
+                    <div className="live-quota-row live-quota-row--metadata">
+                      <strong>{t.settings.sections.liveQuota.credits}</strong>
+                      <span>
+                        {formatCreditsStatus(liveRateLimits.credits, t.settings.sections.liveQuota)}
+                      </span>
+                      <span className={liveRateLimits.rateLimitReachedType ? 'live-quota-warning' : ''}>
+                        {liveRateLimits.rateLimitReachedType
+                          ? t.settings.sections.liveQuota.reachedType(liveRateLimits.rateLimitReachedType)
+                          : ''}
                       </span>
                     </div>
                   </div>

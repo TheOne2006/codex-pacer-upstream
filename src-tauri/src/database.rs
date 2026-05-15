@@ -9,7 +9,12 @@ mod sources;
 mod subscriptions;
 mod sync_settings;
 
-pub use rate_limit_samples::{insert_live_rate_limit_snapshot, replace_session_rate_limit_samples};
+#[cfg(test)]
+pub use rate_limit_samples::insert_rate_limit_metadata_samples;
+pub use rate_limit_samples::{
+    insert_live_rate_limit_snapshot, load_latest_rate_limit_metadata,
+    replace_session_rate_limit_metadata_samples, replace_session_rate_limit_samples,
+};
 pub use sources::{
     delete_codex_source, ensure_local_codex_source, get_codex_source, list_codex_sources,
     set_codex_source_selected, update_codex_source_download_state, upsert_ssh_codex_source,
@@ -52,12 +57,36 @@ pub fn open_connection(db_path: &Path) -> rusqlite::Result<Connection> {
 pub fn init_db(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(include_str!("../sql/schema.sql"))?;
 
+    ensure_rate_limit_metadata_schema(conn)?;
     ensure_sync_settings_schema(conn)?;
     ensure_singletons(conn)?;
     ensure_local_codex_source(conn, None)?;
 
     conn.execute_batch(include_str!("../sql/indexes.sql"))?;
     Ok(())
+}
+
+fn ensure_rate_limit_metadata_schema(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+    CREATE TABLE IF NOT EXISTS rate_limit_metadata_samples (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_id TEXT NOT NULL DEFAULT 'local',
+      source_kind TEXT NOT NULL,
+      source_session_id TEXT NOT NULL DEFAULT '',
+      sample_timestamp TEXT NOT NULL,
+      limit_id TEXT NOT NULL DEFAULT '',
+      limit_name TEXT NOT NULL DEFAULT '',
+      plan_type TEXT NOT NULL DEFAULT '',
+      credits_has_credits INTEGER,
+      credits_unlimited INTEGER,
+      credits_balance TEXT,
+      rate_limit_reached_type TEXT NOT NULL DEFAULT '',
+      raw_rate_limits_json TEXT,
+      created_at TEXT NOT NULL
+    )
+    ",
+    )
 }
 
 fn ensure_sync_settings_schema(conn: &Connection) -> rusqlite::Result<()> {
@@ -157,6 +186,15 @@ mod tests {
             )
             .expect("source indexes");
         assert_eq!(source_index_count, 2);
+
+        let metadata_table_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'rate_limit_metadata_samples'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("metadata table");
+        assert_eq!(metadata_table_count, 1);
 
         let sources = list_codex_sources(&conn).expect("list sources");
         assert!(sources.iter().any(|source| source.id == "local"));

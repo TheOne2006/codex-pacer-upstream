@@ -10,9 +10,13 @@ use walkdir::WalkDir;
 
 use crate::database::{
     bool_to_i64, get_sync_settings, init_db, now_utc_string, open_connection,
-    replace_session_rate_limit_samples, set_last_scan_completed, set_last_scan_started,
+    replace_session_rate_limit_metadata_samples, replace_session_rate_limit_samples,
+    set_last_scan_completed, set_last_scan_started,
 };
-use crate::models::{RateLimitSampleRecord, RawSession, ScanResult, TokenUsage, UsageSnapshot};
+use crate::models::{
+    RateLimitCreditsSnapshot, RateLimitMetadataSampleRecord, RateLimitSampleRecord, RawSession,
+    ScanResult, TokenUsage, UsageSnapshot,
+};
 use crate::pricing::{
     calculate_value_usd, load_catalog_map, normalize_model_id, resolve_pricing,
     seed_pricing_catalog,
@@ -31,6 +35,7 @@ struct ParsedSession {
     raw_session: RawSession,
     snapshots: Vec<UsageSnapshot>,
     rate_limit_samples: Vec<RateLimitSampleRecord>,
+    rate_limit_metadata_samples: Vec<RateLimitMetadataSampleRecord>,
     latest_plan_type: Option<String>,
     last_model_id: Option<String>,
 }
@@ -459,6 +464,7 @@ fn parse_session_file_once(
     let mut first_user_message_title: Option<String> = None;
     let mut snapshots = Vec::new();
     let mut rate_limit_samples = Vec::new();
+    let mut rate_limit_metadata_samples = Vec::new();
     let mut seen_models = HashSet::new();
     let mut first_session_meta: Option<SessionMetaCandidate> = None;
     let mut matching_session_meta: Option<SessionMetaCandidate> = None;
@@ -573,6 +579,35 @@ fn parse_session_file_once(
                     continue;
                 }
 
+                let sample_timestamp = timestamp.clone().unwrap_or_else(now_utc_string);
+                let plan_type = rate_limits_value(payload)
+                    .and_then(|rate_limits| string_alias(rate_limits, &["plan_type", "planType"]));
+                if plan_type.is_some() {
+                    latest_plan_type = plan_type.clone();
+                }
+
+                let limit_id = rate_limits_value(payload).and_then(|rate_limits| {
+                    string_alias(rate_limits, &["limit_id", "limitId"]).or_else(|| {
+                        rate_limits
+                            .get("primary")
+                            .and_then(|primary| string_alias(primary, &["limit_id", "limitId"]))
+                    })
+                });
+                let limit_name = rate_limits_value(payload).and_then(|rate_limits| {
+                    string_alias(rate_limits, &["limit_name", "limitName"]).or_else(|| {
+                        rate_limits
+                            .get("primary")
+                            .and_then(|primary| string_alias(primary, &["limit_name", "limitName"]))
+                    })
+                });
+
+                rate_limit_samples.extend(extract_rate_limit_samples(&sample_timestamp, payload));
+                if let Some(metadata) =
+                    extract_rate_limit_metadata_sample(&sample_timestamp, payload)
+                {
+                    rate_limit_metadata_samples.push(metadata);
+                }
+
                 let info = payload.get("info").unwrap_or(&Value::Null);
                 let total_usage = info.get("total_token_usage").unwrap_or(&Value::Null);
                 if total_usage.is_null() {
@@ -586,22 +621,6 @@ fn parse_session_file_once(
                     reasoning_output_tokens: read_i64(total_usage, "reasoning_output_tokens"),
                     total_tokens: read_total_tokens(total_usage),
                 };
-
-                let plan_type = payload
-                    .get("rate_limits")
-                    .and_then(|rate_limits| rate_limits.get("plan_type"))
-                    .and_then(Value::as_str)
-                    .map(ToString::to_string);
-                if plan_type.is_some() {
-                    latest_plan_type = plan_type.clone();
-                }
-
-                let limit_id = nested_str(payload, &["rate_limits", "limit_id"])
-                    .or_else(|| nested_str(payload, &["rate_limits", "primary", "limit_id"]));
-                let limit_name = nested_str(payload, &["rate_limits", "limit_name"])
-                    .or_else(|| nested_str(payload, &["rate_limits", "primary", "limit_name"]));
-                let sample_timestamp = timestamp.unwrap_or_else(now_utc_string);
-                rate_limit_samples.extend(extract_rate_limit_samples(&sample_timestamp, payload));
 
                 let model_id = current_model
                     .clone()
@@ -650,6 +669,10 @@ fn parse_session_file_once(
     for sample in &mut rate_limit_samples {
         sample.source_session_id = Some(session_id.clone());
     }
+    let mut rate_limit_metadata_samples = rate_limit_metadata_samples;
+    for sample in &mut rate_limit_metadata_samples {
+        sample.source_session_id = Some(session_id.clone());
+    }
 
     Ok(ParsedSession {
         raw_session: RawSession {
@@ -668,6 +691,7 @@ fn parse_session_file_once(
         },
         snapshots,
         rate_limit_samples,
+        rate_limit_metadata_samples,
         latest_plan_type,
         last_model_id: last_model_id.or_else(|| Some("unknown".to_string())),
     })
@@ -768,6 +792,11 @@ fn persist_session(
         &tx,
         &parsed.raw_session.session_id,
         &parsed.rate_limit_samples,
+    )?;
+    replace_session_rate_limit_metadata_samples(
+        &tx,
+        &parsed.raw_session.session_id,
+        &parsed.rate_limit_metadata_samples,
     )?;
 
     let mut previous_usage: Option<TokenUsage> = None;
@@ -882,36 +911,35 @@ fn is_zero_delta(delta: &TokenUsage) -> bool {
 }
 
 fn extract_rate_limit_samples(timestamp: &str, payload: &Value) -> Vec<RateLimitSampleRecord> {
-    let Some(rate_limits) = payload.get("rate_limits") else {
+    let Some(rate_limits) = rate_limits_value(payload) else {
         return Vec::new();
     };
-    if rate_limits.is_null() {
-        return Vec::new();
-    }
 
-    let limit_id = nested_str(rate_limits, &["limit_id"]);
-    let limit_name = nested_str(rate_limits, &["limit_name"]);
-    let plan_type = rate_limits
-        .get("plan_type")
-        .and_then(Value::as_str)
-        .map(ToString::to_string);
+    let limit_id = string_alias(rate_limits, &["limit_id", "limitId"]);
+    let limit_name = string_alias(rate_limits, &["limit_name", "limitName"]);
+    let plan_type = string_alias(rate_limits, &["plan_type", "planType"]);
 
     let mut samples = Vec::new();
     for (bucket, window_key) in [("five_hour", "primary"), ("seven_day", "secondary")] {
         let Some(rate_window) = rate_limits.get(window_key) else {
             continue;
         };
-        let Some(used_percent) = read_percent(rate_window, "used_percent") else {
-            continue;
-        };
-        let Some(window_duration_mins) = rate_window
-            .get("window_duration_mins")
-            .and_then(Value::as_i64)
-            .or_else(|| rate_window.get("window_minutes").and_then(Value::as_i64))
+        let Some(used_percent) = read_percent_alias(rate_window, &["used_percent", "usedPercent"])
         else {
             continue;
         };
-        let Some(resets_at_seconds) = rate_window.get("resets_at").and_then(Value::as_i64) else {
+        let Some(window_duration_mins) = read_i64_alias(
+            rate_window,
+            &[
+                "window_duration_mins",
+                "windowDurationMins",
+                "window_minutes",
+            ],
+        ) else {
+            continue;
+        };
+        let Some(resets_at_seconds) = read_i64_alias(rate_window, &["resets_at", "resetsAt"])
+        else {
             continue;
         };
         let Some(resets_at) = unix_seconds_to_rfc3339_local(resets_at_seconds) else {
@@ -930,10 +958,10 @@ fn extract_rate_limit_samples(timestamp: &str, payload: &Value) -> Vec<RateLimit
             sample_timestamp: timestamp.to_string(),
             limit_id: limit_id
                 .clone()
-                .or_else(|| nested_str(rate_window, &["limit_id"])),
+                .or_else(|| string_alias(rate_window, &["limit_id", "limitId"])),
             limit_name: limit_name
                 .clone()
-                .or_else(|| nested_str(rate_window, &["limit_name"])),
+                .or_else(|| string_alias(rate_window, &["limit_name", "limitName"])),
             plan_type: plan_type.clone(),
             window_start,
             resets_at,
@@ -943,6 +971,59 @@ fn extract_rate_limit_samples(timestamp: &str, payload: &Value) -> Vec<RateLimit
     }
 
     samples
+}
+
+fn extract_rate_limit_metadata_sample(
+    timestamp: &str,
+    payload: &Value,
+) -> Option<RateLimitMetadataSampleRecord> {
+    let rate_limits = rate_limits_value(payload)?;
+    let credits_value = rate_limits.get("credits");
+    let credits = credits_value.and_then(parse_credits_snapshot);
+    let limit_id = string_alias(rate_limits, &["limit_id", "limitId"]);
+    let limit_name = string_alias(rate_limits, &["limit_name", "limitName"]);
+    let plan_type = string_alias(rate_limits, &["plan_type", "planType"]);
+    let rate_limit_reached_type = string_alias(
+        rate_limits,
+        &["rate_limit_reached_type", "rateLimitReachedType"],
+    );
+
+    let has_metadata = limit_id.is_some()
+        || limit_name.is_some()
+        || plan_type.is_some()
+        || credits_value.is_some()
+        || rate_limit_reached_type.is_some();
+    if !has_metadata {
+        return None;
+    }
+
+    Some(RateLimitMetadataSampleRecord {
+        source_kind: "session".to_string(),
+        source_session_id: None,
+        sample_timestamp: timestamp.to_string(),
+        limit_id,
+        limit_name,
+        plan_type,
+        credits,
+        rate_limit_reached_type,
+        raw_rate_limits_json: serde_json::to_string(rate_limits).ok(),
+    })
+}
+
+fn rate_limits_value(payload: &Value) -> Option<&Value> {
+    payload
+        .get("rate_limits")
+        .or_else(|| payload.get("rateLimits"))
+        .filter(|value| !value.is_null())
+}
+
+fn parse_credits_snapshot(value: &Value) -> Option<RateLimitCreditsSnapshot> {
+    let _ = value.as_object()?;
+    Some(RateLimitCreditsSnapshot {
+        has_credits: bool_alias(value, &["has_credits", "hasCredits"]),
+        unlimited: bool_alias(value, &["unlimited"]),
+        balance: json_string_alias(value, &["balance"]),
+    })
 }
 
 fn unix_seconds_to_rfc3339_local(value: i64) -> Option<String> {
@@ -1169,16 +1250,43 @@ fn resolve_root(
     (current, depth)
 }
 
-fn nested_str(value: &Value, keys: &[&str]) -> Option<String> {
-    let mut current = value;
-    for key in keys {
-        current = current.get(*key)?;
-    }
-    current.as_str().map(ToString::to_string)
+fn string_alias(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        value
+            .get(*key)
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+    })
+}
+
+fn bool_alias(value: &Value, keys: &[&str]) -> Option<bool> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_bool))
+}
+
+fn json_string_alias(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        value.get(*key).and_then(|field| match field {
+            Value::Null => None,
+            Value::String(text) => Some(text.clone()),
+            other => Some(other.to_string()),
+        })
+    })
 }
 
 fn read_i64(value: &Value, key: &str) -> i64 {
     value.get(key).and_then(Value::as_i64).unwrap_or_default()
+}
+
+fn read_i64_alias(value: &Value, keys: &[&str]) -> Option<i64> {
+    keys.iter().find_map(|key| {
+        value.get(*key).and_then(|field| {
+            field
+                .as_i64()
+                .or_else(|| field.as_f64().map(|number| number.round() as i64))
+                .or_else(|| field.as_str().and_then(|text| text.parse::<i64>().ok()))
+        })
+    })
 }
 
 fn read_total_tokens(value: &Value) -> i64 {
@@ -1194,6 +1302,10 @@ fn read_percent(value: &Value, key: &str) -> Option<i64> {
             .as_i64()
             .or_else(|| field.as_f64().map(|number| number.round() as i64))
     })
+}
+
+fn read_percent_alias(value: &Value, keys: &[&str]) -> Option<i64> {
+    keys.iter().find_map(|key| read_percent(value, key))
 }
 
 #[derive(Debug, Clone)]
@@ -1604,6 +1716,68 @@ mod tests {
         assert_eq!(samples.2, "seven_day".to_string());
         assert_eq!(samples.3, 79);
         assert_eq!(samples.4, 88);
+    }
+
+    #[test]
+    fn scan_persists_rate_limit_metadata_without_window_samples() {
+        let directory = tempdir().expect("tempdir");
+        let codex_home = directory.path().join("codex-home");
+        let sessions_dir = codex_home.join("sessions");
+        std::fs::create_dir_all(&sessions_dir).expect("sessions dir");
+
+        let session_path = sessions_dir.join("quota-metadata.jsonl");
+        std::fs::write(
+      &session_path,
+      concat!(
+        "{\"timestamp\":\"2026-05-15T12:00:00+08:00\",\"type\":\"session_meta\",\"payload\":{\"id\":\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\"}}\n",
+        "{\"timestamp\":\"2026-05-15T12:00:00+08:00\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":1,\"cached_input_tokens\":0,\"output_tokens\":1,\"reasoning_output_tokens\":0,\"total_tokens\":2}},\"rate_limits\":{\"limit_id\":\"codex-pro\",\"limit_name\":\"Codex Pro\",\"plan_type\":\"pro\",\"credits\":{\"has_credits\":true,\"unlimited\":false,\"balance\":\"promo-balance-42\"},\"rate_limit_reached_type\":\"secondary\"}}}\n"
+      ),
+    )
+    .expect("write session");
+
+        let db_path = directory.path().join("usage.sqlite");
+        perform_scan(&db_path, Some(codex_home.to_string_lossy().to_string())).expect("scan");
+
+        let conn = open_connection(&db_path).expect("open db");
+        let window_sample_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM rate_limit_samples WHERE source_kind = 'session'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("window samples");
+        assert_eq!(window_sample_count, 0);
+
+        let metadata = conn
+            .query_row(
+                "
+        SELECT limit_id, plan_type, credits_has_credits, credits_unlimited, credits_balance,
+               rate_limit_reached_type, raw_rate_limits_json
+        FROM rate_limit_metadata_samples
+        WHERE source_kind = 'session'
+        ",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                },
+            )
+            .expect("metadata");
+
+        assert_eq!(metadata.0, "codex-pro");
+        assert_eq!(metadata.1, "pro");
+        assert_eq!(metadata.2, 1);
+        assert_eq!(metadata.3, 0);
+        assert_eq!(metadata.4, "promo-balance-42");
+        assert_eq!(metadata.5, "secondary");
+        assert!(metadata.6.contains("\"credits\""));
     }
 
     #[test]

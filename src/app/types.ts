@@ -174,10 +174,18 @@ export interface RateLimitWindowSnapshot {
   windowStart: string | null
 }
 
+export interface RateLimitCreditsSnapshot {
+  hasCredits: boolean | null
+  unlimited: boolean | null
+  balance: string | null
+}
+
 export interface LiveRateLimitSnapshot {
   limitId: string | null
   limitName: string | null
   planType: string | null
+  credits: RateLimitCreditsSnapshot | null
+  rateLimitReachedType: string | null
   primary: RateLimitWindowSnapshot | null
   secondary: RateLimitWindowSnapshot | null
   fetchedAt: string

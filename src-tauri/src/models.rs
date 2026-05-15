@@ -311,6 +311,28 @@ pub struct RateLimitSampleRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RateLimitCreditsSnapshot {
+    pub has_credits: Option<bool>,
+    pub unlimited: Option<bool>,
+    pub balance: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RateLimitMetadataSampleRecord {
+    pub source_kind: String,
+    pub source_session_id: Option<String>,
+    pub sample_timestamp: String,
+    pub limit_id: Option<String>,
+    pub limit_name: Option<String>,
+    pub plan_type: Option<String>,
+    pub credits: Option<RateLimitCreditsSnapshot>,
+    pub rate_limit_reached_type: Option<String>,
+    pub raw_rate_limits_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OverviewStats {
     pub api_value_usd: f64,
     pub subscription_cost_usd: f64,
@@ -344,6 +366,8 @@ pub struct LiveRateLimitSnapshot {
     pub limit_id: Option<String>,
     pub limit_name: Option<String>,
     pub plan_type: Option<String>,
+    pub credits: Option<RateLimitCreditsSnapshot>,
+    pub rate_limit_reached_type: Option<String>,
     pub primary: Option<RateLimitWindowSnapshot>,
     pub secondary: Option<RateLimitWindowSnapshot>,
     pub fetched_at: String,

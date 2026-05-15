@@ -10,9 +10,19 @@ typedef void (*CodexPacerActionHandler)(const char *action);
 
 static const CGFloat CPPanelWidth = 420.0;
 static const CGFloat CPPanelHeight = 720.0;
+static const CGFloat CPPanelAnimationOffset = 10.0;
+static const CGFloat CPPanelAnimationInset = 6.0;
+static const NSTimeInterval CPPanelOpenAnimationDuration = 0.18;
+static const NSTimeInterval CPPanelCloseAnimationDuration = 0.14;
 
 static NSColor *CPColor(CGFloat r, CGFloat g, CGFloat b, CGFloat a) {
     return [NSColor colorWithCalibratedRed:r green:g blue:b alpha:a];
+}
+
+static NSRect CPPanelAnimationFrame(NSRect frame) {
+    NSRect animatedFrame = NSInsetRect(frame, CPPanelAnimationInset, CPPanelAnimationInset);
+    animatedFrame.origin.y += CPPanelAnimationOffset;
+    return animatedFrame;
 }
 
 static NSDictionary *CPAsDictionary(id value) {
@@ -609,7 +619,9 @@ static CGFloat CPStatusTextWidth(NSString *text, NSDictionary *attributes) {
 @property(nonatomic) CodexPacerSnapshotFree snapshotFree;
 @property(nonatomic) CodexPacerActionHandler actionHandler;
 @property(nonatomic) BOOL popupEnabled;
+@property(nonatomic) BOOL panelClosing;
 @property(nonatomic, copy) NSString *displayLanguage;
+- (void)closePanelAnimated:(BOOL)animated;
 @end
 
 @implementation CPNativeMenuBarController
@@ -680,7 +692,7 @@ static CGFloat CPStatusTextWidth(NSString *text, NSDictionary *attributes) {
     self.popupEnabled = popupEnabled;
     NSStatusBarButton *button = self.statusItem.button;
     self.statusItem.visible = visible;
-    if (!visible) [self closePanel];
+    if (!visible) [self closePanelAnimated:NO];
     NSString *resolvedTooltip = tooltip.length > 0 ? tooltip : @"Codex Pacer";
     self.statusView.toolTip = resolvedTooltip;
     button.toolTip = resolvedTooltip;
@@ -730,7 +742,7 @@ static CGFloat CPStatusTextWidth(NSString *text, NSDictionary *attributes) {
 }
 
 - (void)showContextMenu {
-    [self closePanel];
+    [self closePanelAnimated:NO];
     NSString *ignoredError = nil;
     [self snapshotWithForceRefresh:NO error:&ignoredError];
     BOOL zh = [self usesChineseInterface];
@@ -757,10 +769,33 @@ static CGFloat CPStatusTextWidth(NSString *text, NSDictionary *attributes) {
     [self rebuildPanelWithForceRefresh:forceRefresh];
     NSStatusBarButton *button = self.statusItem.button;
     if (!button) return;
-    [self.panel setFrame:[self panelFrameForButton:button] display:YES animate:NO];
+    NSRect finalFrame = [self panelFrameForButton:button];
+    NSRect openingFrame = CPPanelAnimationFrame(finalFrame);
+    self.panelClosing = NO;
+    self.panel.alphaValue = 0.0;
+    [self.panel setFrame:openingFrame display:YES animate:NO];
     [self.panel orderFrontRegardless];
     [self.panel makeKeyWindow];
     [self installEventMonitors];
+    __weak CPNativeMenuBarController *weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        CPNativeMenuBarController *strongSelf = weakSelf;
+        if (!strongSelf || !strongSelf.panel.visible || strongSelf.panelClosing) return;
+        [strongSelf.panel setFrame:openingFrame display:YES animate:NO];
+        strongSelf.panel.alphaValue = 0.0;
+        [strongSelf.panel.contentView displayIfNeeded];
+        [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
+            context.duration = CPPanelOpenAnimationDuration;
+            context.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
+            context.allowsImplicitAnimation = YES;
+            strongSelf.panel.animator.alphaValue = 1.0;
+            [strongSelf.panel.animator setFrame:finalFrame display:YES];
+        } completionHandler:^{
+            if (!strongSelf.panel.visible || strongSelf.panelClosing) return;
+            strongSelf.panel.alphaValue = 1.0;
+            [strongSelf.panel setFrame:finalFrame display:YES animate:NO];
+        }];
+    });
 }
 
 - (NSRect)panelFrameForButton:(NSStatusBarButton *)button {
@@ -789,8 +824,39 @@ static CGFloat CPStatusTextWidth(NSString *text, NSDictionary *attributes) {
 }
 
 - (void)closePanel {
+    [self closePanelAnimated:YES];
+}
+
+- (void)closePanelAnimated:(BOOL)animated {
     [self removeEventMonitors];
-    [self.panel orderOut:nil];
+    if (!self.panel.visible) {
+        self.panelClosing = NO;
+        self.panel.alphaValue = 1.0;
+        return;
+    }
+    if (!animated) {
+        self.panelClosing = NO;
+        self.panel.alphaValue = 1.0;
+        [self.panel orderOut:nil];
+        return;
+    }
+    if (self.panelClosing) return;
+
+    self.panelClosing = YES;
+    NSRect currentFrame = self.panel.frame;
+    NSRect dismissedFrame = CPPanelAnimationFrame(currentFrame);
+    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
+        context.duration = CPPanelCloseAnimationDuration;
+        context.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseIn];
+        context.allowsImplicitAnimation = YES;
+        self.panel.animator.alphaValue = 0.0;
+        [self.panel.animator setFrame:dismissedFrame display:YES];
+    } completionHandler:^{
+        [self.panel orderOut:nil];
+        self.panel.alphaValue = 1.0;
+        [self.panel setFrame:currentFrame display:NO animate:NO];
+        self.panelClosing = NO;
+    }];
 }
 
 - (void)refreshPanel {

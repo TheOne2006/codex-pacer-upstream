@@ -22,8 +22,9 @@ use database::{
     delete_codex_source as delete_codex_source_record, delete_subscription_record,
     get_display_language, get_subscription_profile, get_sync_settings, init_db,
     insert_live_rate_limit_snapshot, list_codex_sources, list_subscription_records,
-    open_connection, save_subscription_profile, save_sync_settings, set_codex_source_selected,
-    set_display_language, update_subscription_record, upsert_ssh_codex_source,
+    load_latest_rate_limit_metadata, open_connection, save_subscription_profile,
+    save_sync_settings, set_codex_source_selected, set_display_language,
+    update_subscription_record, upsert_ssh_codex_source,
 };
 use importer::{perform_scan, perform_scan_for_source, recalculate_all_session_values};
 use models::{
@@ -1154,45 +1155,85 @@ fn load_persisted_live_rate_limits_for_source(
     let secondary = load_latest_persisted_rate_limit_window(&conn, "seven_day", source_kind)
         .ok()
         .flatten();
-    if primary.is_none() && secondary.is_none() {
+    let metadata = load_latest_rate_limit_metadata(&conn, source_kind)
+        .ok()
+        .flatten();
+    if primary.is_none() && secondary.is_none() && metadata.is_none() {
         return None;
     }
 
-    let fetched_at = primary
-        .as_ref()
-        .map(|window| window.fetched_at.clone())
-        .or_else(|| secondary.as_ref().map(|window| window.fetched_at.clone()))
-        .unwrap_or_else(|| Local::now().to_rfc3339());
+    let fetched_at = latest_rate_limit_timestamp([
+        primary.as_ref().map(|window| window.fetched_at.as_str()),
+        secondary.as_ref().map(|window| window.fetched_at.as_str()),
+        metadata
+            .as_ref()
+            .map(|metadata| metadata.sample_timestamp.as_str()),
+    ])
+    .unwrap_or_else(|| Local::now().to_rfc3339());
 
     Some(LiveRateLimitSnapshot {
-        limit_id: primary
+        limit_id: metadata
             .as_ref()
-            .and_then(|window| window.limit_id.clone())
+            .and_then(|metadata| metadata.limit_id.clone())
+            .or_else(|| primary.as_ref().and_then(|window| window.limit_id.clone()))
             .or_else(|| {
                 secondary
                     .as_ref()
                     .and_then(|window| window.limit_id.clone())
             }),
-        limit_name: primary
+        limit_name: metadata
             .as_ref()
-            .and_then(|window| window.limit_name.clone())
+            .and_then(|metadata| metadata.limit_name.clone())
+            .or_else(|| {
+                primary
+                    .as_ref()
+                    .and_then(|window| window.limit_name.clone())
+            })
             .or_else(|| {
                 secondary
                     .as_ref()
                     .and_then(|window| window.limit_name.clone())
             }),
-        plan_type: primary
+        plan_type: metadata
             .as_ref()
-            .and_then(|window| window.plan_type.clone())
+            .and_then(|metadata| metadata.plan_type.clone())
+            .or_else(|| primary.as_ref().and_then(|window| window.plan_type.clone()))
             .or_else(|| {
                 secondary
                     .as_ref()
                     .and_then(|window| window.plan_type.clone())
             }),
+        credits: metadata
+            .as_ref()
+            .and_then(|metadata| metadata.credits.clone()),
+        rate_limit_reached_type: metadata
+            .as_ref()
+            .and_then(|metadata| metadata.rate_limit_reached_type.clone()),
         primary: primary.map(|window| window.snapshot),
         secondary: secondary.map(|window| window.snapshot),
         fetched_at,
     })
+}
+
+fn latest_rate_limit_timestamp<'a>(
+    values: impl IntoIterator<Item = Option<&'a str>>,
+) -> Option<String> {
+    let mut latest: Option<&str> = None;
+    for value in values.into_iter().flatten() {
+        match latest {
+            None => latest = Some(value),
+            Some(current) if timestamp_after(value, current) => latest = Some(value),
+            _ => {}
+        }
+    }
+    latest.map(ToString::to_string)
+}
+
+fn timestamp_after(candidate: &str, current: &str) -> bool {
+    match (parse_rfc3339_local(candidate), parse_rfc3339_local(current)) {
+        (Some(candidate), Some(current)) => candidate > current,
+        _ => candidate > current,
+    }
 }
 
 fn get_live_rate_limits_local(state: &AppState) -> Option<LiveRateLimitSnapshot> {
@@ -1621,6 +1662,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::database::insert_rate_limit_metadata_samples;
+    use crate::models::{RateLimitCreditsSnapshot, RateLimitMetadataSampleRecord};
+    use tempfile::tempdir;
 
     fn speed_test_settings() -> SyncSettings {
         SyncSettings {
@@ -1810,5 +1854,77 @@ mod tests {
         assert!(should_hide_dock_icon(&enabled_with_menu_bar));
         assert!(!should_hide_dock_icon(&enabled_without_menu_bar));
         assert!(!should_hide_dock_icon(&disabled_with_menu_bar));
+    }
+
+    #[test]
+    fn fallback_snapshot_includes_latest_rate_limit_metadata() {
+        let directory = tempdir().expect("tempdir");
+        let db_path = directory.path().join("usage.sqlite");
+        let conn = open_connection(&db_path).expect("open db");
+        init_db(&conn).expect("init db");
+
+        insert_live_rate_limit_snapshot(
+            &conn,
+            &LiveRateLimitSnapshot {
+                limit_id: Some("old-limit".to_string()),
+                limit_name: Some("Old Limit".to_string()),
+                plan_type: Some("old-plan".to_string()),
+                credits: None,
+                rate_limit_reached_type: None,
+                primary: Some(RateLimitWindowSnapshot {
+                    used_percent: 20,
+                    remaining_percent: 80,
+                    window_duration_mins: Some(300),
+                    resets_at: Some("2026-05-15T15:00:00+08:00".to_string()),
+                    window_start: Some("2026-05-15T10:00:00+08:00".to_string()),
+                }),
+                secondary: None,
+                fetched_at: "2026-05-15T12:00:00+08:00".to_string(),
+            },
+        )
+        .expect("insert live window");
+        insert_rate_limit_metadata_samples(
+            &conn,
+            &[RateLimitMetadataSampleRecord {
+                source_kind: "live".to_string(),
+                source_session_id: None,
+                sample_timestamp: "2026-05-15T12:05:00+08:00".to_string(),
+                limit_id: Some("new-limit".to_string()),
+                limit_name: Some("New Limit".to_string()),
+                plan_type: Some("pro".to_string()),
+                credits: Some(RateLimitCreditsSnapshot {
+                    has_credits: Some(true),
+                    unlimited: Some(false),
+                    balance: Some("bonus-balance".to_string()),
+                }),
+                rate_limit_reached_type: Some("primary".to_string()),
+                raw_rate_limits_json: None,
+            }],
+        )
+        .expect("insert metadata");
+
+        let state = AppState {
+            db_path,
+            app_data_dir: directory.path().join("app-data"),
+            scan_in_progress: Arc::new(AtomicBool::new(false)),
+            menu_bar_available: false,
+            live_rate_limits: Arc::new(Mutex::new(None)),
+        };
+
+        let snapshot =
+            load_persisted_live_rate_limits_for_source(&state, None).expect("fallback snapshot");
+
+        assert!(snapshot.primary.is_some());
+        assert_eq!(snapshot.limit_id.as_deref(), Some("new-limit"));
+        assert_eq!(snapshot.plan_type.as_deref(), Some("pro"));
+        assert_eq!(
+            snapshot
+                .credits
+                .as_ref()
+                .and_then(|credits| credits.balance.as_deref()),
+            Some("bonus-balance")
+        );
+        assert_eq!(snapshot.rate_limit_reached_type.as_deref(), Some("primary"));
+        assert_eq!(snapshot.fetched_at, "2026-05-15T12:05:00+08:00");
     }
 }
