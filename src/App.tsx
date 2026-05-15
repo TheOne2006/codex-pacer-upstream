@@ -1,6 +1,6 @@
 import { startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { isTauri } from '@tauri-apps/api/core'
-import { emitTo, listen } from '@tauri-apps/api/event'
+import { listen } from '@tauri-apps/api/event'
 import {
   BadgeDollarSign,
   ChartNoAxesCombined,
@@ -99,16 +99,13 @@ import {
 import { MetricCard, MiniCard } from './shared/ui/MetricCards'
 import { isErrorLikeStatus } from './shared/lib/status'
 
-const MENU_BAR_POPUP_WINDOW_LABEL = 'menu-bar-popup'
-const MENU_BAR_POPUP_REFRESH_EVENT = 'codex-counter://menu-bar-popup-refresh'
-const MENU_BAR_POPUP_LANGUAGE_EVENT = 'codex-counter://language-changed'
 const PRODUCT_NAME = 'Codex Pacer'
 
 type StatusMessageKey = 'waitingForFirstScan' | 'fetchingLiveQuotaWindow'
-type ConversationSortField = 'value' | 'tokens' | 'updatedAt' | 'startedAt' | 'sessions'
+type ConversationSortField = 'value' | 'tokens' | 'turns' | 'updatedAt' | 'startedAt' | 'sessions'
 type ConversationSortDirection = 'desc' | 'asc'
 
-const conversationSortFields: ConversationSortField[] = ['value', 'tokens', 'updatedAt', 'startedAt', 'sessions']
+const conversationSortFields: ConversationSortField[] = ['value', 'tokens', 'turns', 'updatedAt', 'startedAt', 'sessions']
 const conversationSortDirections: ConversationSortDirection[] = ['desc', 'asc']
 
 function statusMessageForKey(key: StatusMessageKey, t: ReturnType<typeof useI18n>['t']) {
@@ -364,11 +361,6 @@ function App() {
     }
   }, [])
 
-  useEffect(() => {
-    if (!isTauri()) return
-    void emitTo(MENU_BAR_POPUP_WINDOW_LABEL, MENU_BAR_POPUP_LANGUAGE_EVENT, { language }).catch(() => {})
-  }, [language])
-
   const loadDetail = useCallback(async (rootSessionId: string | null) => {
     const requestId = latestDetailRequestIdRef.current + 1
     latestDetailRequestIdRef.current = requestId
@@ -485,9 +477,6 @@ function App() {
       }
       detailCacheRef.current.clear()
       await loadShell(false)
-      if (isTauri()) {
-        await emitTo(MENU_BAR_POPUP_WINDOW_LABEL, MENU_BAR_POPUP_REFRESH_EVENT, {}).catch(() => {})
-      }
       setStatusMessage(t.status.pricingRefreshed)
     } catch (error) {
       setStatusMessage(String(error))
@@ -657,9 +646,6 @@ function App() {
       setSourceSelectionMessage('')
       setPendingDeleteSource(null)
       await loadShell(false)
-      if (isTauri()) {
-        await emitTo(MENU_BAR_POPUP_WINDOW_LABEL, MENU_BAR_POPUP_REFRESH_EVENT, {}).catch(() => {})
-      }
       setSourceManagerMessage(t.sources.deletedSource(source.label))
     } catch (error) {
       setSourceManagerMessage(String(error))
@@ -679,9 +665,6 @@ function App() {
     const nextSyncSettings = await updateSyncSettings(payload.syncSettings)
     setSyncSettings(nextSyncSettings)
     await loadShell(false)
-    if (isTauri()) {
-      await emitTo(MENU_BAR_POPUP_WINDOW_LABEL, MENU_BAR_POPUP_REFRESH_EVENT, {}).catch(() => {})
-    }
     setStatusMessage(t.status.settingsSaved)
   }
 
@@ -694,9 +677,6 @@ function App() {
     const nextSubscriptionRecords = await listSubscriptionRecords()
     setSubscriptionRecords(nextSubscriptionRecords)
     await loadShell(false)
-    if (isTauri()) {
-      await emitTo(MENU_BAR_POPUP_WINDOW_LABEL, MENU_BAR_POPUP_REFRESH_EVENT, {}).catch(() => {})
-    }
     setStatusMessage(t.status.subscriptionRecordSaved)
   }
 
@@ -705,9 +685,6 @@ function App() {
     const nextSubscriptionRecords = await listSubscriptionRecords()
     setSubscriptionRecords(nextSubscriptionRecords)
     await loadShell(false)
-    if (isTauri()) {
-      await emitTo(MENU_BAR_POPUP_WINDOW_LABEL, MENU_BAR_POPUP_REFRESH_EVENT, {}).catch(() => {})
-    }
     setStatusMessage(t.status.subscriptionRecordDeleted)
   }
 
@@ -719,6 +696,8 @@ function App() {
       switch (conversationSortField) {
         case 'tokens':
           return conversation.totalTokens
+        case 'turns':
+          return conversation.turnCount
         case 'updatedAt': {
           const updatedAt = conversation.updatedAt ? Date.parse(conversation.updatedAt) : 0
           return Number.isFinite(updatedAt) ? updatedAt : 0
@@ -755,7 +734,7 @@ function App() {
   const conversationSortDirectionLabel =
     conversationSortField === 'updatedAt' || conversationSortField === 'startedAt'
       ? t.conversationList.sortDirections.time[conversationSortDirection]
-      : conversationSortField === 'sessions'
+      : conversationSortField === 'sessions' || conversationSortField === 'turns'
         ? t.conversationList.sortDirections.count[conversationSortDirection]
         : t.conversationList.sortDirections.numeric[conversationSortDirection]
   const conversationSortSummary = `${t.conversationList.sortFields[conversationSortField]} · ${conversationSortDirectionLabel}`
@@ -1294,7 +1273,7 @@ function App() {
                                 <span>
                                   {conversationSortField === 'updatedAt' || conversationSortField === 'startedAt'
                                     ? t.conversationList.sortDirections.time[direction]
-                                    : conversationSortField === 'sessions'
+                                    : conversationSortField === 'sessions' || conversationSortField === 'turns'
                                       ? t.conversationList.sortDirections.count[direction]
                                       : t.conversationList.sortDirections.numeric[direction]}
                                 </span>
@@ -1345,27 +1324,27 @@ function App() {
                               {modelId}
                             </span>
                           ))}
+                          {conversation.sourceLabels.length > 0 ? (
+                            <>
+                              {conversation.sourceLabels.slice(0, 2).map((sourceLabel) => (
+                                <span className="model-chip" key={sourceLabel} title={sourceLabel}>
+                                  {sourceLabel}
+                                </span>
+                              ))}
+                              {conversation.sourceLabels.length > 2 ? (
+                                <span className="model-chip">
+                                  +{conversation.sourceLabels.length - 2}
+                                </span>
+                              ) : null}
+                            </>
+                          ) : null}
                         </div>
-                        {conversation.sourceLabels.length > 0 ? (
-                          <div className="source-chip-row">
-                            {conversation.sourceLabels.slice(0, 2).map((sourceLabel) => (
-                              <span className="source-chip" key={sourceLabel} title={sourceLabel}>
-                                {sourceLabel}
-                              </span>
-                            ))}
-                            {conversation.sourceLabels.length > 2 ? (
-                              <span className="source-chip source-chip--more">
-                                +{conversation.sourceLabels.length - 2}
-                              </span>
-                            ) : null}
-                          </div>
-                        ) : null}
                         <div className="token-row">
                           <span>
                             {formatTokenCount(conversation.totalTokens, language)} {t.common.tokens}
                           </span>
                           <span>
-                            {conversation.sessionCount} {t.common.sessions}
+                            {conversation.sessionCount} {t.common.sessions} · {conversation.turnCount} {t.common.turns}
                           </span>
                         </div>
                         <div className="meta-row">

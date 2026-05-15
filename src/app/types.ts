@@ -183,44 +183,6 @@ export interface LiveRateLimitSnapshot {
   fetchedAt: string
 }
 
-export interface MenuBarPopupQuotaSnapshot {
-  usedPercent: number
-  remainingPercent: number
-  windowDurationMins: number | null
-  resetsAt: string | null
-  windowStart: string | null
-}
-
-export interface MenuBarPopupSuggestedSpeed {
-  percent: number
-  displayValue: string
-  emoji: string
-  status: 'fast' | 'healthy' | 'slow'
-  remainingTimePercent: number
-  remainingPercent: number
-}
-
-export interface MenuBarPopupSnapshot {
-  fetchedAt: string
-  refreshIntervalSeconds: number
-  selectedBucket: OverviewBucket
-  quota5h: MenuBarPopupQuotaSnapshot | null
-  quota7d: MenuBarPopupQuotaSnapshot | null
-  quotaTrend7d: QuotaTrendPoint[]
-  suggestedSpeed7d: MenuBarPopupSuggestedSpeed | null
-  speedFastThresholdPercent: number
-  speedSlowThresholdPercent: number
-  apiValueSelectedBucket: number
-  totalTokensSelectedBucket: number
-  conversationCountSelectedBucket: number
-  payoffRatio: number
-  lastScanCompletedAt: string | null
-  liveQuotaFetchedAt: string | null
-  visibleModules: MenuBarPopupModuleId[]
-  showResetTimeline: boolean
-  showActions: boolean
-}
-
 export interface QuotaTrendPoint {
   label: string
   timestamp: string
@@ -315,6 +277,7 @@ export interface ConversationListItem {
   outputTokens: number
   reasoningOutputTokens: number
   totalTokens: number
+  turnCount: number
   sessionCount: number
   subagentCount: number
   apiValueUsd: number

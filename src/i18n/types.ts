@@ -44,6 +44,7 @@ export type TranslationSet = {
     reset: string
     updated: string
     tokens: string
+    turns: string
     sessions: string
     session: string
     fast: string
@@ -106,6 +107,7 @@ export type TranslationSet = {
       tokens: string
       updatedAt: string
       startedAt: string
+      turns: string
       sessions: string
     }
     sortDirections: {
@@ -214,25 +216,6 @@ export type TranslationSet = {
     maintenanceActions: string
   }
   popup: {
-    title: string
-    updated: (value: string) => string
-    loading: string
-    failedTitle: string
-    resetIn: (value: string) => string
-    speedTitle: string
-    speedHint: string
-    sevenDayUsageChart: string
-    chartLegendRemaining: string
-    chartLegendReference: string
-    chartLegendCurrent: string
-    chartValueBadge: string
-    speedStatus: {
-      fast: string
-      healthy: string
-      slow: string
-    }
-    resetTimeline5h: string
-    resetTimeline7d: string
     modules: {
       apiValue: string
       tokenCount: string
@@ -240,11 +223,6 @@ export type TranslationSet = {
       liveQuotaFreshness: string
       payoffRatio: string
       conversationCount: string
-    }
-    actions: {
-      openDashboard: string
-      refresh: string
-      settings: string
     }
   }
   settings: {

@@ -482,6 +482,7 @@ pub struct ConversationListItem {
     pub output_tokens: i64,
     pub reasoning_output_tokens: i64,
     pub total_tokens: i64,
+    pub turn_count: usize,
     pub session_count: usize,
     pub subagent_count: usize,
     pub api_value_usd: f64,

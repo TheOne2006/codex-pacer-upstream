@@ -572,6 +572,7 @@ dependencies = [
 name = "codex-pacer"
 version = "1.1.1"
 dependencies = [
+ "cc",
  "chrono",
  "dirs",
  "log",

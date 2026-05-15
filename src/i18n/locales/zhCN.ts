@@ -29,6 +29,7 @@ export const zhCN: TranslationSet = {
       reset: '重置',
       updated: '更新于',
       tokens: 'Tokens',
+      turns: 'turn',
       sessions: '会话',
       session: '会话',
       fast: 'Fast',
@@ -100,6 +101,7 @@ export const zhCN: TranslationSet = {
         tokens: 'Tokens',
         updatedAt: '更新时间',
         startedAt: '创建时间',
+        turns: 'Turn 数',
         sessions: '会话数',
       },
       sortDirections: {
@@ -208,25 +210,6 @@ export const zhCN: TranslationSet = {
       maintenanceActions: '维护操作',
     },
     popup: {
-      title: '托盘',
-      updated: (value) => `更新 · ${value}`,
-      loading: '正在加载托盘概览…',
-      failedTitle: '托盘概览加载失败',
-      resetIn: (value) => `${value}后重置`,
-      speedTitle: '7天节奏',
-      speedHint: '100% = 额度消耗与时间同步；低于 100% 偏快，高于 100% 偏慢',
-      sevenDayUsageChart: '7 天使用情况折线图',
-      chartLegendRemaining: '剩余额度',
-      chartLegendReference: '时间基准',
-      chartLegendCurrent: '当前',
-      chartValueBadge: 'API 价值',
-      speedStatus: {
-        fast: '放慢',
-        healthy: '正常',
-        slow: '可加速',
-      },
-      resetTimeline5h: '5h reset',
-      resetTimeline7d: '7d reset',
       modules: {
         apiValue: 'API',
         tokenCount: 'Tokens',
@@ -234,11 +217,6 @@ export const zhCN: TranslationSet = {
         liveQuotaFreshness: '额度快照',
         payoffRatio: '回本',
         conversationCount: '对话',
-      },
-      actions: {
-        openDashboard: '主窗口',
-        refresh: '刷新',
-        settings: '设置',
       },
     },
     settings: {

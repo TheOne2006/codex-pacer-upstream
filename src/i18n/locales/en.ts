@@ -29,6 +29,7 @@ export const en: TranslationSet = {
       reset: 'Reset',
       updated: 'Updated',
       tokens: 'Tokens',
+      turns: 'turns',
       sessions: 'sessions',
       session: 'Session',
       fast: 'Fast',
@@ -100,6 +101,7 @@ export const en: TranslationSet = {
         tokens: 'Tokens',
         updatedAt: 'Updated time',
         startedAt: 'Created time',
+        turns: 'Turns',
         sessions: 'Sessions',
       },
       sortDirections: {
@@ -208,25 +210,6 @@ export const en: TranslationSet = {
       maintenanceActions: 'Maintenance actions',
     },
     popup: {
-      title: 'Tray',
-      updated: (value) => `Updated · ${value}`,
-      loading: 'Loading tray snapshot…',
-      failedTitle: 'Failed to load tray snapshot',
-      resetIn: (value) => `Resets in ${value}`,
-      speedTitle: '7D pace',
-      speedHint: '100% = quota and time are aligned; below 100% is faster, above 100% is slower',
-      sevenDayUsageChart: '7-day usage line chart',
-      chartLegendRemaining: 'Blue: quota left',
-      chartLegendReference: 'Dashed: time baseline',
-      chartLegendCurrent: 'Dot: current',
-      chartValueBadge: 'API value',
-      speedStatus: {
-        fast: 'Slow down',
-        healthy: 'On pace',
-        slow: 'Push harder',
-      },
-      resetTimeline5h: '5h reset',
-      resetTimeline7d: '7d reset',
       modules: {
         apiValue: 'API',
         tokenCount: 'Tokens',
@@ -234,11 +217,6 @@ export const en: TranslationSet = {
         liveQuotaFreshness: 'Quota age',
         payoffRatio: 'Payoff',
         conversationCount: 'Chats',
-      },
-      actions: {
-        openDashboard: 'Dashboard',
-        refresh: 'Refresh',
-        settings: 'Settings',
       },
     },
     settings: {

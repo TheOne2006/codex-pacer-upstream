@@ -11,10 +11,8 @@ import type {
   ConversationFilters,
   ConversationListItem,
   LiveRateLimitSnapshot,
-  MenuBarPopupSnapshot,
   OverviewBucket,
   OverviewResponse,
-  QuotaTrendPoint,
   SubscriptionProfile,
   SubscriptionRecord,
   SubscriptionRecordInput,
@@ -166,73 +164,6 @@ function createMockOverview(
     compositionShares: [],
     sourceShares: [],
     liveRateLimits: createMockLiveRateLimits(),
-  }
-}
-
-function createMockQuotaTrend7d(windowStart: string, fetchedAt: string): QuotaTrendPoint[] {
-  const startTime = new Date(windowStart).getTime()
-  const fetchedTime = new Date(fetchedAt).getTime()
-  const step = 24 * 60 * 60 * 1000
-  const remaining = [100, 93, 86, 79, 72, 68]
-
-  return remaining.map((remainingPercent, index) => {
-    const timestamp = new Date(Math.min(startTime + index * step, fetchedTime)).toISOString()
-    const usedPercent = 100 - remainingPercent
-
-    return {
-      label: timestamp,
-      timestamp,
-      apiValueUsd: 0,
-      cumulativeApiValueUsd: 0,
-      totalTokens: 0,
-      cumulativeTokens: 0,
-      remainingPercent,
-      usedPercent,
-    }
-  })
-}
-
-function createMockMenuBarPopupSnapshot(): MenuBarPopupSnapshot {
-  const fetchedAt = nowIso()
-  const quota7dWindowStart = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString()
-  return {
-    fetchedAt,
-    refreshIntervalSeconds: 300,
-    selectedBucket: 'day',
-    quota5h: {
-      usedPercent: 58,
-      remainingPercent: 42,
-      windowDurationMins: 300,
-      resetsAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
-      windowStart: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
-    },
-    quota7d: {
-      usedPercent: 32,
-      remainingPercent: 68,
-      windowDurationMins: 7 * 24 * 60,
-      resetsAt: new Date(Date.now() + 4 * 24 * 60 * 60 * 1000).toISOString(),
-      windowStart: quota7dWindowStart,
-    },
-    quotaTrend7d: createMockQuotaTrend7d(quota7dWindowStart, fetchedAt),
-    suggestedSpeed7d: {
-      percent: 82,
-      displayValue: '82%',
-      emoji: '🔥',
-      status: 'fast',
-      remainingTimePercent: 83,
-      remainingPercent: 68,
-    },
-    speedFastThresholdPercent: 85,
-    speedSlowThresholdPercent: 115,
-    apiValueSelectedBucket: 14.3,
-    totalTokensSelectedBucket: 182_400,
-    conversationCountSelectedBucket: 9,
-    payoffRatio: 0.71,
-    lastScanCompletedAt: fetchedAt,
-    liveQuotaFetchedAt: fetchedAt,
-    visibleModules: ['api_value', 'scan_freshness'],
-    showResetTimeline: true,
-    showActions: true,
   }
 }
 
@@ -418,20 +349,6 @@ export async function getConversationDetail(
   return invokeOrMock('getConversationDetail', { rootSessionId }, () => {
     throw new Error(`Conversation ${rootSessionId} is unavailable in browser preview mode.`)
   })
-}
-
-export async function getMenuBarPopupSnapshot(forceRefresh = false): Promise<MenuBarPopupSnapshot> {
-  return invokeOrMock('getMenuBarPopupSnapshot', { forceRefresh }, createMockMenuBarPopupSnapshot)
-}
-
-export async function resizeMenuBarPopup(height: number) {
-  return invokeOrMock('resizeMenuBarPopup', { height }, () => true)
-}
-
-export type MenuBarPopupAction = 'open_dashboard' | 'open_settings' | 'hide' | 'refresh'
-
-export async function handleMenuBarPopupAction(action: MenuBarPopupAction) {
-  return invokeOrMock('handleMenuBarPopupAction', { action }, () => true)
 }
 
 export async function getSyncSettings() {

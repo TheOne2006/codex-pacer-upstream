@@ -3,8 +3,7 @@
   "identifier": "default",
   "description": "enables the default permissions",
   "windows": [
-    "main",
-    "menu-bar-popup"
+    "main"
   ],
   "permissions": [
     "core:default"

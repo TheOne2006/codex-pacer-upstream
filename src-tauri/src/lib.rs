@@ -1,5 +1,7 @@
 mod database;
 mod importer;
+#[cfg(target_os = "macos")]
+mod macos_menu_bar;
 mod models;
 mod pricing;
 mod queries;
@@ -42,27 +44,11 @@ use sources::{
     discover_ssh_codex_sources, download_codex_source, download_codex_sources_parallel,
     source_cache_codex_home,
 };
-use tauri::{
-    menu::{Menu, MenuItem, PredefinedMenuItem},
-    tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, Monitor, PhysicalPosition, PhysicalSize, Position, Rect, State,
-    WebviewUrl, WebviewWindow, WebviewWindowBuilder,
-};
+use tauri::{AppHandle, Manager, State};
 
-const DAILY_VALUE_TRAY_ID: &str = "daily-api-value";
-const DAILY_VALUE_SHOW_WINDOW_MENU_ID: &str = "daily-api-value.show-window";
-const DAILY_VALUE_QUIT_MENU_ID: &str = "daily-api-value.quit";
 const MAIN_WINDOW_LABEL: &str = "main";
-const MENU_BAR_POPUP_WINDOW_LABEL: &str = "menu-bar-popup";
 const MENU_BAR_POPUP_OPEN_SETTINGS_EVENT: &str = "codex-counter://open-settings";
-const MENU_BAR_POPUP_REFRESH_EVENT: &str = "codex-counter://menu-bar-popup-refresh";
-const MENU_BAR_POPUP_WIDTH: f64 = 420.0;
-const MENU_BAR_POPUP_INITIAL_HEIGHT: f64 = MENU_BAR_POPUP_MIN_HEIGHT;
-const MENU_BAR_POPUP_MIN_HEIGHT: f64 = 260.0;
-const MENU_BAR_POPUP_MAX_HEIGHT: f64 = 760.0;
-const MENU_BAR_POPUP_OFFSET_Y: i32 = 8;
-const TRAY_ICON_MIN_LOGICAL_HEIGHT: f64 = 16.0;
-const TRAY_ICON_MAX_LOGICAL_HEIGHT: f64 = 40.0;
+
 #[derive(Clone)]
 struct CachedRateLimitSnapshot {
     fetched_at: Instant,
@@ -70,19 +56,12 @@ struct CachedRateLimitSnapshot {
 }
 
 #[derive(Clone)]
-struct MenuBarPopupAnchor {
-    rect: Rect,
-    click_position: PhysicalPosition<f64>,
-}
-
-#[derive(Clone)]
 struct AppState {
     db_path: PathBuf,
     app_data_dir: PathBuf,
     scan_in_progress: Arc<AtomicBool>,
-    daily_value_tray: Option<TrayIcon>,
+    menu_bar_available: bool,
     live_rate_limits: Arc<Mutex<Option<CachedRateLimitSnapshot>>>,
-    menu_bar_popup_anchor: Arc<Mutex<Option<MenuBarPopupAnchor>>>,
 }
 
 #[allow(non_snake_case)]
@@ -166,48 +145,6 @@ fn listConversations(
 #[tauri::command]
 fn getLiveRateLimits(state: State<'_, AppState>) -> Result<LiveRateLimitSnapshot, String> {
     get_live_rate_limits_cached(state.inner())
-}
-
-#[allow(non_snake_case)]
-#[tauri::command(rename_all = "camelCase")]
-fn getMenuBarPopupSnapshot(
-    state: State<'_, AppState>,
-    force_refresh: Option<bool>,
-) -> Result<MenuBarPopupSnapshot, String> {
-    build_menu_bar_popup_snapshot(state.inner(), force_refresh.unwrap_or(false))
-}
-
-#[allow(non_snake_case)]
-#[tauri::command(rename_all = "camelCase")]
-fn resizeMenuBarPopup(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    height: f64,
-) -> Result<bool, String> {
-    let Some(window) = app.get_webview_window(MENU_BAR_POPUP_WINDOW_LABEL) else {
-        return Ok(false);
-    };
-    let (height, position) = match latest_menu_bar_popup_anchor(state.inner()) {
-        Some(anchor) => {
-            menu_bar_popup_geometry(&window, anchor.rect, anchor.click_position, height)?
-        }
-        None => (
-            height.clamp(MENU_BAR_POPUP_MIN_HEIGHT, MENU_BAR_POPUP_MAX_HEIGHT),
-            None,
-        ),
-    };
-    window
-        .set_size(tauri::Size::Logical(tauri::LogicalSize::new(
-            MENU_BAR_POPUP_WIDTH,
-            height,
-        )))
-        .map_err(|error| error.to_string())?;
-    if let Some(position) = position {
-        window
-            .set_position(Position::Physical(position))
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(true)
 }
 
 #[allow(non_snake_case)]
@@ -381,39 +318,6 @@ fn getConversationDetail(
     root_session_id: String,
 ) -> Result<ConversationDetail, String> {
     get_conversation_detail(&state.db_path, &root_session_id)
-}
-
-#[allow(non_snake_case)]
-#[tauri::command(rename_all = "camelCase")]
-fn handleMenuBarPopupAction(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    action: String,
-) -> Result<bool, String> {
-    match action.as_str() {
-        "open_dashboard" => {
-            hide_menu_bar_popup(&app);
-            show_main_window(&app);
-            Ok(true)
-        }
-        "open_settings" => {
-            hide_menu_bar_popup(&app);
-            show_main_window(&app);
-            app.emit_to(MAIN_WINDOW_LABEL, MENU_BAR_POPUP_OPEN_SETTINGS_EVENT, ())
-                .map_err(|error| error.to_string())?;
-            Ok(true)
-        }
-        "hide" => {
-            hide_menu_bar_popup(&app);
-            Ok(true)
-        }
-        "refresh" => {
-            let _ = build_menu_bar_popup_snapshot(state.inner(), true)?;
-            refresh_daily_value_menu_bar(state.inner());
-            Ok(true)
-        }
-        _ => Err(format!("Unsupported popup action: {action}")),
-    }
 }
 
 #[allow(non_snake_case)]
@@ -648,33 +552,33 @@ fn refresh_daily_value_menu_bar(state: &AppState) {
 fn update_daily_value_menu_bar(state: &AppState) -> Result<(), String> {
     let conn = open_connection(&state.db_path).map_err(|error| error.to_string())?;
     let settings = get_sync_settings(&conn).map_err(|error| error.to_string())?;
-    let Some(tray) = state.daily_value_tray.as_ref() else {
-        return Ok(());
-    };
 
-    if !menu_bar_has_visible_content(&settings) {
-        tray.set_visible(false).map_err(|error| error.to_string())?;
+    #[cfg(target_os = "macos")]
+    {
+        if !state.menu_bar_available {
+            return Ok(());
+        }
+        let visible = menu_bar_has_visible_content(&settings);
+        let (api_value_title, live_metric_label, live_metric_title) =
+            current_menu_bar_title_parts(state, &settings)?;
+        let tooltip = menu_bar_tooltip(&settings, api_value_title.as_deref(), state)?;
+        macos_menu_bar::update(
+            visible,
+            settings.menu_bar_popup_enabled,
+            settings.show_menu_bar_logo,
+            api_value_title.as_deref(),
+            live_metric_label.as_deref(),
+            live_metric_title.as_deref(),
+            &tooltip,
+        );
         return Ok(());
     }
 
-    apply_menu_bar_icon(tray, settings.show_menu_bar_logo)?;
-    let (api_value_title, live_metric_title) = current_menu_bar_title_parts(state, &settings)?;
-    match menu_bar_title(api_value_title.as_deref(), live_metric_title.as_deref()) {
-        Some(title) => tray
-            .set_title(Some(&title))
-            .map_err(|error| error.to_string())?,
-        None => tray
-            .set_title(None::<String>)
-            .map_err(|error| error.to_string())?,
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = settings;
+        Ok(())
     }
-    tray.set_tooltip(Some(menu_bar_tooltip(
-        &settings,
-        api_value_title.as_deref(),
-        state,
-    )?))
-    .map_err(|error| error.to_string())?;
-    tray.set_visible(true).map_err(|error| error.to_string())?;
-    Ok(())
 }
 
 fn menu_bar_has_visible_content(settings: &SyncSettings) -> bool {
@@ -715,7 +619,7 @@ fn sync_dock_icon_visibility(app: &AppHandle, state: &AppState) {
     let Ok(settings) = get_sync_settings(&conn) else {
         return;
     };
-    apply_dock_icon_visibility(app, &settings, state.daily_value_tray.is_some());
+    apply_dock_icon_visibility(app, &settings, state.menu_bar_available);
 }
 
 #[cfg(target_os = "macos")]
@@ -728,25 +632,10 @@ fn show_dock_icon_for_main_window(app: &AppHandle) {
 #[cfg(not(target_os = "macos"))]
 fn show_dock_icon_for_main_window(_: &AppHandle) {}
 
-fn apply_menu_bar_icon(tray: &TrayIcon, show_logo: bool) -> Result<(), String> {
-    if show_logo {
-        if let Some(icon) = tray.app_handle().default_window_icon().cloned() {
-            tray.set_icon(Some(icon))
-                .map_err(|error| error.to_string())?;
-            #[cfg(target_os = "macos")]
-            tray.set_icon_as_template(true)
-                .map_err(|error| error.to_string())?;
-        }
-    } else {
-        tray.set_icon(None).map_err(|error| error.to_string())?;
-    }
-    Ok(())
-}
-
 fn current_menu_bar_title_parts(
     state: &AppState,
     settings: &SyncSettings,
-) -> Result<(Option<String>, Option<String>), String> {
+) -> Result<(Option<String>, Option<String>, Option<String>), String> {
     let bucket = normalize_menu_bar_bucket(&settings.menu_bar_bucket);
     let anchor = Local::now().format("%Y-%m-%d").to_string();
     let live_rate_limits = if settings.show_menu_bar_live_quota_percent
@@ -775,7 +664,7 @@ fn current_menu_bar_title_parts(
     } else {
         None
     };
-    let live_metric_title = if settings.show_menu_bar_live_quota_percent {
+    let (live_metric_label, live_metric_title) = if settings.show_menu_bar_live_quota_percent {
         menu_bar_live_quota_snapshot(
             state,
             settings,
@@ -784,12 +673,15 @@ fn current_menu_bar_title_parts(
             live_rate_limits,
             Local::now(),
         )?
+        .map(|metric| (Some(metric.0), Some(metric.1)))
+        .unwrap_or((None, None))
     } else {
-        None
+        (None, None)
     };
-    Ok((api_value_title, live_metric_title))
+    Ok((api_value_title, live_metric_label, live_metric_title))
 }
 
+#[cfg(test)]
 fn menu_bar_title(
     api_value_title: Option<&str>,
     live_metric_title: Option<&str>,
@@ -919,7 +811,7 @@ fn menu_bar_live_quota_snapshot(
     metric: &str,
     existing_snapshot: Option<LiveRateLimitSnapshot>,
     now: DateTime<Local>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<(String, String)>, String> {
     let snapshot = match existing_snapshot {
         Some(snapshot) => snapshot,
         None => get_live_rate_limits_cached(state)?,
@@ -945,15 +837,34 @@ fn menu_bar_live_quota_title(
     bucket: &str,
     metric: &str,
     now: DateTime<Local>,
-) -> Option<String> {
+) -> Option<(String, String)> {
     let (_, window) = selected_menu_bar_live_quota_window(snapshot, bucket)?;
+    let normalized_bucket = normalize_menu_bar_live_quota_bucket(bucket);
     match normalize_menu_bar_live_quota_metric(metric).as_str() {
         "suggested_usage_speed" => {
             let velocity = suggested_usage_velocity(window, now, settings)?;
-            Some(velocity.rendered_value())
+            Some((
+                menu_bar_live_quota_status_label(&normalized_bucket, "suggested_usage_speed"),
+                velocity.rendered_value(),
+            ))
         }
-        _ => Some(format!("{}%", window.remaining_percent.clamp(0, 100))),
+        _ => Some((
+            menu_bar_live_quota_status_label(&normalized_bucket, "remaining_percent"),
+            format!("{}%", window.remaining_percent.clamp(0, 100)),
+        )),
     }
+}
+
+fn menu_bar_live_quota_status_label(bucket: &str, metric: &str) -> String {
+    let prefix = match normalize_menu_bar_live_quota_bucket(bucket).as_str() {
+        "seven_day" => "7d",
+        _ => "5h",
+    };
+    let suffix = match normalize_menu_bar_live_quota_metric(metric).as_str() {
+        "suggested_usage_speed" => "Pace",
+        _ => "Rest",
+    };
+    format!("{prefix} {suffix}")
 }
 
 fn menu_bar_live_quota_tooltip(
@@ -1512,437 +1423,6 @@ fn live_rate_limit_cache_ttl(state: &AppState) -> Duration {
         .unwrap_or(Duration::from_secs(300))
 }
 
-fn build_menu_bar_popup_window(app: &AppHandle) -> Result<WebviewWindow, String> {
-    if let Some(window) = app.get_webview_window(MENU_BAR_POPUP_WINDOW_LABEL) {
-        return Ok(window);
-    }
-
-    WebviewWindowBuilder::new(
-        app,
-        MENU_BAR_POPUP_WINDOW_LABEL,
-        WebviewUrl::App("index.html".into()),
-    )
-    .title("Codex Pacer Popup")
-    .inner_size(MENU_BAR_POPUP_WIDTH, MENU_BAR_POPUP_INITIAL_HEIGHT)
-    .resizable(false)
-    .visible(false)
-    .focused(false)
-    .decorations(false)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .accept_first_mouse(true)
-    .shadow(true)
-    .initialization_script("window.__CODEX_COUNTER_SURFACE__ = 'menu-bar-popup';")
-    .build()
-    .map_err(|error| error.to_string())
-}
-
-fn hide_menu_bar_popup(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window(MENU_BAR_POPUP_WINDOW_LABEL) {
-        let _ = window.hide();
-    }
-}
-
-fn toggle_menu_bar_popup(
-    app: &AppHandle,
-    rect: Rect,
-    click_position: PhysicalPosition<f64>,
-) -> Result<(), String> {
-    let state = app.state::<AppState>();
-    let conn = open_connection(&state.db_path).map_err(|error| error.to_string())?;
-    let settings = get_sync_settings(&conn).map_err(|error| error.to_string())?;
-    if !settings.menu_bar_popup_enabled {
-        clear_menu_bar_popup_anchor(state.inner());
-        show_main_window(app);
-        return Ok(());
-    }
-
-    let window = build_menu_bar_popup_window(app)?;
-    if window.is_visible().map_err(|error| error.to_string())? {
-        clear_menu_bar_popup_anchor(state.inner());
-        window.hide().map_err(|error| error.to_string())?;
-        return Ok(());
-    }
-
-    store_menu_bar_popup_anchor(state.inner(), rect, click_position);
-    position_menu_bar_popup(&window, rect, click_position)?;
-    window.show().map_err(|error| error.to_string())?;
-    window.set_focus().map_err(|error| error.to_string())?;
-    window
-        .emit(MENU_BAR_POPUP_REFRESH_EVENT, ())
-        .map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-fn position_menu_bar_popup(
-    window: &WebviewWindow,
-    rect: Rect,
-    click_position: PhysicalPosition<f64>,
-) -> Result<(), String> {
-    if let (_, Some(position)) =
-        menu_bar_popup_geometry(window, rect, click_position, MENU_BAR_POPUP_INITIAL_HEIGHT)?
-    {
-        return window
-            .set_position(Position::Physical(position))
-            .map_err(|error| error.to_string());
-    }
-
-    let anchor = tray_rect_anchor_physical(rect, click_position, 1.0);
-    let anchor_x = anchor.x.round() as i32;
-    let anchor_y = anchor.y.round() as i32;
-    let x = (anchor_x - MENU_BAR_POPUP_WIDTH as i32 / 2).max(0);
-    let y = (anchor_y + MENU_BAR_POPUP_OFFSET_Y).max(0);
-    window
-        .set_position(Position::Physical(PhysicalPosition::new(x, y)))
-        .map_err(|error| error.to_string())
-}
-
-fn menu_bar_popup_geometry(
-    window: &WebviewWindow,
-    rect: Rect,
-    click_position: PhysicalPosition<f64>,
-    requested_height: f64,
-) -> Result<(f64, Option<PhysicalPosition<i32>>), String> {
-    let Some(monitor) = tray_event_monitor(window, rect, click_position)? else {
-        return Ok((
-            requested_height.clamp(MENU_BAR_POPUP_MIN_HEIGHT, MENU_BAR_POPUP_MAX_HEIGHT),
-            None,
-        ));
-    };
-
-    let geometry = menu_bar_popup_geometry_for_monitor(
-        rect,
-        click_position,
-        *monitor.position(),
-        *monitor.size(),
-        monitor.scale_factor(),
-        requested_height,
-    );
-    Ok((geometry.height, Some(geometry.position)))
-}
-
-fn store_menu_bar_popup_anchor(
-    state: &AppState,
-    rect: Rect,
-    click_position: PhysicalPosition<f64>,
-) {
-    match state.menu_bar_popup_anchor.lock() {
-        Ok(mut anchor) => {
-            *anchor = Some(MenuBarPopupAnchor {
-                rect,
-                click_position,
-            });
-        }
-        Err(_) => {
-            log::warn!("Failed to store tray popup anchor.");
-        }
-    }
-}
-
-fn clear_menu_bar_popup_anchor(state: &AppState) {
-    match state.menu_bar_popup_anchor.lock() {
-        Ok(mut anchor) => {
-            *anchor = None;
-        }
-        Err(_) => {
-            log::warn!("Failed to clear tray popup anchor.");
-        }
-    }
-}
-
-fn latest_menu_bar_popup_anchor(state: &AppState) -> Option<MenuBarPopupAnchor> {
-    state
-        .menu_bar_popup_anchor
-        .lock()
-        .map(|anchor| anchor.clone())
-        .unwrap_or_else(|_| {
-            log::warn!("Failed to read tray popup anchor.");
-            None
-        })
-}
-
-fn tray_event_monitor(
-    window: &WebviewWindow,
-    rect: Rect,
-    click_position: PhysicalPosition<f64>,
-) -> Result<Option<Monitor>, String> {
-    let monitors = window
-        .available_monitors()
-        .map_err(|error| error.to_string())?;
-    let mut best_match: Option<(Monitor, f64)> = None;
-
-    for monitor in monitors {
-        let scale_factor = normalized_scale_factor(monitor.scale_factor());
-        // macOS tray events report scaled global positions; monitor_from_point expects CoreGraphics coordinates.
-        let lookup_point = tray_event_monitor_lookup_point(rect, click_position, scale_factor);
-        let Some(candidate) = window
-            .monitor_from_point(lookup_point.x, lookup_point.y)
-            .map_err(|error| error.to_string())?
-        else {
-            continue;
-        };
-
-        if !same_monitor(&candidate, &monitor) {
-            continue;
-        }
-
-        let score = tray_monitor_scale_score(rect, scale_factor);
-        let is_better_match = match best_match.as_ref() {
-            Some((_, best_score)) => score < *best_score,
-            None => true,
-        };
-        if is_better_match {
-            best_match = Some((monitor, score));
-        }
-    }
-
-    if let Some((monitor, _)) = best_match {
-        return Ok(Some(monitor));
-    }
-
-    window
-        .monitor_from_point(click_position.x, click_position.y)
-        .map_err(|error| error.to_string())
-}
-
-fn same_monitor(left: &Monitor, right: &Monitor) -> bool {
-    left.position() == right.position()
-        && left.size() == right.size()
-        && (left.scale_factor() - right.scale_factor()).abs() < 0.01
-}
-
-fn normalized_scale_factor(scale_factor: f64) -> f64 {
-    if scale_factor.is_finite() && scale_factor > 0.0 {
-        scale_factor
-    } else {
-        1.0
-    }
-}
-
-fn tray_event_monitor_lookup_point(
-    rect: Rect,
-    click_position: PhysicalPosition<f64>,
-    scale_factor: f64,
-) -> PhysicalPosition<f64> {
-    let anchor = tray_rect_anchor_physical(rect, click_position, scale_factor);
-    PhysicalPosition::new(anchor.x / scale_factor, anchor.y / scale_factor)
-}
-
-fn tray_monitor_scale_score(rect: Rect, scale_factor: f64) -> f64 {
-    let rect_size = tray_rect_size_to_physical(rect.size, scale_factor);
-    if rect_size.height == 0 {
-        return TRAY_ICON_MAX_LOGICAL_HEIGHT;
-    }
-
-    let logical_height = rect_size.height as f64 / scale_factor;
-    if (TRAY_ICON_MIN_LOGICAL_HEIGHT..=TRAY_ICON_MAX_LOGICAL_HEIGHT).contains(&logical_height) {
-        0.0
-    } else if logical_height < TRAY_ICON_MIN_LOGICAL_HEIGHT {
-        TRAY_ICON_MIN_LOGICAL_HEIGHT - logical_height
-    } else {
-        logical_height - TRAY_ICON_MAX_LOGICAL_HEIGHT
-    }
-}
-
-fn menu_bar_popup_opens_above_tray(
-    tray_top: i32,
-    monitor_position: PhysicalPosition<i32>,
-    monitor_size: PhysicalSize<u32>,
-) -> bool {
-    menu_bar_popup_opens_above_tray_for_policy(
-        tray_top,
-        monitor_position,
-        monitor_size,
-        platform_allows_bottom_taskbar_popup_above(),
-    )
-}
-
-#[cfg(target_os = "windows")]
-fn platform_allows_bottom_taskbar_popup_above() -> bool {
-    true
-}
-
-#[cfg(not(target_os = "windows"))]
-fn platform_allows_bottom_taskbar_popup_above() -> bool {
-    false
-}
-
-fn menu_bar_popup_opens_above_tray_for_policy(
-    tray_top: i32,
-    monitor_position: PhysicalPosition<i32>,
-    monitor_size: PhysicalSize<u32>,
-    allow_above: bool,
-) -> bool {
-    if !allow_above {
-        return false;
-    }
-
-    let monitor_mid_y = monitor_position.y + monitor_size.height as i32 / 2;
-    tray_top >= monitor_mid_y
-}
-
-struct MenuBarPopupGeometry {
-    position: PhysicalPosition<i32>,
-    height: f64,
-}
-
-fn menu_bar_popup_geometry_for_monitor(
-    rect: Rect,
-    click_position: PhysicalPosition<f64>,
-    monitor_position: PhysicalPosition<i32>,
-    monitor_size: PhysicalSize<u32>,
-    scale_factor: f64,
-    requested_height: f64,
-) -> MenuBarPopupGeometry {
-    let scale_factor = normalized_scale_factor(scale_factor);
-    let anchor = tray_rect_anchor_physical(rect, click_position, scale_factor);
-    let tray_top = tray_rect_top_physical(rect, click_position, scale_factor);
-    let popup_width = logical_to_physical_i32(MENU_BAR_POPUP_WIDTH, scale_factor);
-    let offset_y = logical_to_physical_i32(MENU_BAR_POPUP_OFFSET_Y as f64, scale_factor);
-    let mut x = anchor.x.round() as i32 - popup_width / 2;
-    let opens_above = menu_bar_popup_opens_above_tray(tray_top, monitor_position, monitor_size);
-    let available_height_physical = if opens_above {
-        tray_top - offset_y - monitor_position.y
-    } else {
-        monitor_position.y + monitor_size.height as i32 - anchor.y.round() as i32 - offset_y
-    };
-    let available_height =
-        (available_height_physical.max(0) as f64 / scale_factor).max(MENU_BAR_POPUP_MIN_HEIGHT);
-    let height = requested_height.clamp(
-        MENU_BAR_POPUP_MIN_HEIGHT,
-        MENU_BAR_POPUP_MAX_HEIGHT.min(available_height),
-    );
-    let popup_height = logical_to_physical_i32(height, scale_factor);
-    let mut y = if opens_above {
-        tray_top - offset_y - popup_height
-    } else {
-        anchor.y.round() as i32 + offset_y
-    };
-    let max_x = monitor_position.x + monitor_size.width as i32 - popup_width;
-    let max_y = monitor_position.y + monitor_size.height as i32 - popup_height;
-    x = x.clamp(monitor_position.x, max_x.max(monitor_position.x));
-    y = y.clamp(monitor_position.y, max_y.max(monitor_position.y));
-    MenuBarPopupGeometry {
-        position: PhysicalPosition::new(x, y),
-        height,
-    }
-}
-
-fn tray_rect_anchor_physical(
-    rect: Rect,
-    click_position: PhysicalPosition<f64>,
-    scale_factor: f64,
-) -> PhysicalPosition<f64> {
-    let rect_position = tray_rect_position_to_physical(rect.position, scale_factor);
-    let rect_size = tray_rect_size_to_physical(rect.size, scale_factor);
-    if rect_size.width > 0 && rect_size.height > 0 {
-        return PhysicalPosition::new(
-            rect_position.x as f64 + rect_size.width as f64 / 2.0,
-            rect_position.y as f64 + rect_size.height as f64,
-        );
-    }
-
-    click_position
-}
-
-fn logical_to_physical_i32(value: f64, scale_factor: f64) -> i32 {
-    (value * normalized_scale_factor(scale_factor))
-        .round()
-        .max(1.0) as i32
-}
-
-fn tray_rect_top_physical(
-    rect: Rect,
-    click_position: PhysicalPosition<f64>,
-    scale_factor: f64,
-) -> i32 {
-    let rect_position = tray_rect_position_to_physical(rect.position, scale_factor);
-    let rect_size = tray_rect_size_to_physical(rect.size, scale_factor);
-    if rect_size.height > 0 {
-        rect_position.y
-    } else {
-        click_position.y.round() as i32
-    }
-}
-
-fn tray_rect_position_to_physical(position: Position, scale_factor: f64) -> PhysicalPosition<i32> {
-    match position {
-        Position::Physical(position) => position,
-        Position::Logical(position) => position.to_physical(scale_factor),
-    }
-}
-
-fn tray_rect_size_to_physical(size: tauri::Size, scale_factor: f64) -> tauri::PhysicalSize<u32> {
-    match size {
-        tauri::Size::Physical(size) => size,
-        tauri::Size::Logical(size) => size.to_physical(scale_factor),
-    }
-}
-
-fn build_daily_value_menu_bar(app: &AppHandle, db_path: &PathBuf) -> Result<TrayIcon, String> {
-    let conn = open_connection(db_path).map_err(|error| error.to_string())?;
-    let settings = get_sync_settings(&conn).map_err(|error| error.to_string())?;
-    let initial_title = String::new();
-
-    let show_window = MenuItem::with_id(
-        app,
-        DAILY_VALUE_SHOW_WINDOW_MENU_ID,
-        "Open Codex Pacer",
-        true,
-        None::<&str>,
-    )
-    .map_err(|error| error.to_string())?;
-    let separator = PredefinedMenuItem::separator(app).map_err(|error| error.to_string())?;
-    let quit = MenuItem::with_id(app, DAILY_VALUE_QUIT_MENU_ID, "Quit", true, None::<&str>)
-        .map_err(|error| error.to_string())?;
-    let menu = Menu::with_items(app, &[&show_window, &separator, &quit])
-        .map_err(|error| error.to_string())?;
-
-    let mut builder = TrayIconBuilder::with_id(DAILY_VALUE_TRAY_ID)
-        .menu(&menu)
-        .title(&initial_title)
-        .tooltip(menu_bar_bucket_label(&settings.menu_bar_bucket))
-        .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| {
-            if event.id() == DAILY_VALUE_SHOW_WINDOW_MENU_ID {
-                show_main_window(app);
-            } else if event.id() == DAILY_VALUE_QUIT_MENU_ID {
-                app.exit(0);
-            }
-        })
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                position,
-                button,
-                button_state,
-                rect,
-                ..
-            } = event
-            {
-                if button == MouseButton::Left && button_state == MouseButtonState::Up {
-                    if let Err(error) = toggle_menu_bar_popup(tray.app_handle(), rect, position) {
-                        log::warn!("Failed to toggle menu bar popup: {error}");
-                    }
-                }
-            }
-        });
-
-    if settings.show_menu_bar_logo {
-        if let Some(icon) = app.default_window_icon().cloned() {
-            builder = builder.icon(icon);
-        }
-    }
-    #[cfg(target_os = "macos")]
-    {
-        builder = builder.icon_as_template(true);
-    }
-
-    let tray = builder.build(app).map_err(|error| error.to_string())?;
-    tray.set_visible(menu_bar_has_visible_content(&settings))
-        .map_err(|error| error.to_string())?;
-    Ok(tray)
-}
-
 fn show_main_window(app: &AppHandle) {
     show_dock_icon_for_main_window(app);
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
@@ -2021,20 +1501,6 @@ pub fn run() {
                 .build(),
         )
         .on_window_event(|window, event| {
-            if window.label() == MENU_BAR_POPUP_WINDOW_LABEL {
-                match event {
-                    tauri::WindowEvent::CloseRequested { api, .. } => {
-                        api.prevent_close();
-                        let _ = window.hide();
-                    }
-                    tauri::WindowEvent::Focused(false) => {
-                        let _ = window.hide();
-                    }
-                    _ => {}
-                }
-                return;
-            }
-
             if window.label() != MAIN_WINDOW_LABEL {
                 return;
             }
@@ -2044,13 +1510,15 @@ pub fn run() {
             };
 
             let state = window.state::<AppState>();
-            let should_hide_to_menu_bar = state
-                .daily_value_tray
-                .as_ref()
-                .and_then(|_| open_connection(&state.db_path).ok())
-                .and_then(|conn| get_sync_settings(&conn).ok())
-                .map(|settings| menu_bar_has_visible_content(&settings))
-                .unwrap_or(false);
+            let should_hide_to_menu_bar = if state.menu_bar_available {
+                open_connection(&state.db_path)
+                    .ok()
+                    .and_then(|conn| get_sync_settings(&conn).ok())
+                    .map(|settings| menu_bar_has_visible_content(&settings))
+                    .unwrap_or(false)
+            } else {
+                false
+            };
 
             if should_hide_to_menu_bar {
                 api.prevent_close();
@@ -2077,31 +1545,26 @@ pub fn run() {
             recalculate_all_session_values(&conn).map_err(|error| error.to_string())?;
 
             let app_handle = app.app_handle();
-            let daily_value_tray = match build_daily_value_menu_bar(&app_handle, &db_path) {
-                Ok(tray) => Some(tray),
+            #[cfg(target_os = "macos")]
+            let menu_bar_available = match macos_menu_bar::configure(&app_handle) {
+                Ok(()) => true,
                 Err(error) => {
-                    log::warn!("Failed to set up menu bar API value: {error}");
-                    None
+                    log::warn!("Failed to set up native macOS menu bar popup: {error}");
+                    false
                 }
             };
+            #[cfg(not(target_os = "macos"))]
+            let menu_bar_available = false;
             let state = AppState {
                 db_path,
                 app_data_dir,
                 scan_in_progress: Arc::new(AtomicBool::new(false)),
-                daily_value_tray,
+                menu_bar_available,
                 live_rate_limits: Arc::new(Mutex::new(None)),
-                menu_bar_popup_anchor: Arc::new(Mutex::new(None)),
             };
             app.manage(state.clone());
             if let Ok(settings) = get_sync_settings(&conn) {
-                apply_dock_icon_visibility(
-                    &app_handle,
-                    &settings,
-                    state.daily_value_tray.is_some(),
-                );
-            }
-            if let Err(error) = build_menu_bar_popup_window(&app_handle) {
-                log::warn!("Failed to set up menu bar popup window: {error}");
+                apply_dock_icon_visibility(&app_handle, &settings, state.menu_bar_available);
             }
             refresh_daily_value_menu_bar(&state);
             spawn_initial_scan(state.clone());
@@ -2117,8 +1580,6 @@ pub fn run() {
             getOverview,
             listConversations,
             getLiveRateLimits,
-            getMenuBarPopupSnapshot,
-            resizeMenuBarPopup,
             loadDashboard,
             discoverSshCodexSources,
             listCodexSources,
@@ -2128,7 +1589,6 @@ pub fn run() {
             downloadCodexSource,
             downloadCodexSources,
             getConversationDetail,
-            handleMenuBarPopupAction,
             getSyncSettings,
             updateSyncSettings,
             getSubscriptionProfile,
@@ -2287,6 +1747,22 @@ mod tests {
     }
 
     #[test]
+    fn menu_bar_live_metric_label_matches_bucket_and_metric() {
+        assert_eq!(
+            menu_bar_live_quota_status_label("seven_day", "remaining_percent"),
+            "7d Rest"
+        );
+        assert_eq!(
+            menu_bar_live_quota_status_label("five_hour", "remaining_percent"),
+            "5h Rest"
+        );
+        assert_eq!(
+            menu_bar_live_quota_status_label("seven_day", "suggested_usage_speed"),
+            "7d Pace"
+        );
+    }
+
+    #[test]
     fn menu_bar_can_hide_completely_when_all_display_content_is_disabled() {
         let settings = SyncSettings {
             show_menu_bar_logo: false,
@@ -2325,174 +1801,5 @@ mod tests {
         assert!(should_hide_dock_icon(&enabled_with_menu_bar));
         assert!(!should_hide_dock_icon(&enabled_without_menu_bar));
         assert!(!should_hide_dock_icon(&disabled_with_menu_bar));
-    }
-
-    #[test]
-    fn tray_popup_position_keeps_physical_tray_coordinates_unscaled() {
-        let position =
-            tray_rect_position_to_physical(Position::Physical((1440.0, 12.0).into()), 2.0);
-        let size = tray_rect_size_to_physical(tauri::Size::Physical((24u32, 24u32).into()), 2.0);
-
-        assert_eq!(position, PhysicalPosition::new(1440, 12));
-        assert_eq!(size.width, 24);
-        assert_eq!(size.height, 24);
-    }
-
-    #[test]
-    fn tray_popup_position_scales_logical_coordinates_once() {
-        let position = tray_rect_position_to_physical(Position::Logical((720.0, 6.0).into()), 2.0);
-        let size = tray_rect_size_to_physical(tauri::Size::Logical((12.0, 12.0).into()), 2.0);
-
-        assert_eq!(position, PhysicalPosition::new(1440, 12));
-        assert_eq!(size.width, 24);
-        assert_eq!(size.height, 24);
-    }
-
-    #[test]
-    fn tray_popup_monitor_lookup_undoes_status_item_scale() {
-        let rect = Rect {
-            position: Position::Physical((4000.0, 10.0).into()),
-            size: tauri::Size::Physical((48u32, 48u32).into()),
-        };
-
-        let lookup_point =
-            tray_event_monitor_lookup_point(rect, PhysicalPosition::new(4024.0, 24.0), 2.0);
-
-        assert_eq!(lookup_point, PhysicalPosition::new(2012.0, 29.0));
-    }
-
-    #[test]
-    fn tray_popup_monitor_scale_score_prefers_menu_bar_sized_rect() {
-        let retina_rect = Rect {
-            position: Position::Physical((4000.0, 10.0).into()),
-            size: tauri::Size::Physical((48u32, 48u32).into()),
-        };
-        let standard_rect = Rect {
-            position: Position::Physical((2000.0, 10.0).into()),
-            size: tauri::Size::Physical((24u32, 24u32).into()),
-        };
-
-        assert_eq!(tray_monitor_scale_score(retina_rect, 2.0), 0.0);
-        assert!(tray_monitor_scale_score(retina_rect, 1.0) > 0.0);
-        assert_eq!(tray_monitor_scale_score(standard_rect, 1.0), 0.0);
-        assert!(tray_monitor_scale_score(standard_rect, 2.0) > 0.0);
-    }
-
-    #[test]
-    fn tray_popup_platform_policy_keeps_non_windows_menu_bar_popups_below() {
-        assert!(!menu_bar_popup_opens_above_tray_for_policy(
-            1040,
-            PhysicalPosition::new(0, 0),
-            PhysicalSize::new(1920, 1080),
-            false,
-        ));
-    }
-
-    #[test]
-    fn tray_popup_platform_policy_allows_windows_bottom_taskbar_popups_above() {
-        assert!(menu_bar_popup_opens_above_tray_for_policy(
-            1040,
-            PhysicalPosition::new(0, 0),
-            PhysicalSize::new(1920, 1080),
-            true,
-        ));
-        assert!(!menu_bar_popup_opens_above_tray_for_policy(
-            20,
-            PhysicalPosition::new(0, 0),
-            PhysicalSize::new(1920, 1080),
-            true,
-        ));
-    }
-
-    #[test]
-    fn tray_popup_position_clamps_to_selected_external_monitor() {
-        let rect = Rect {
-            position: Position::Physical((7250.0, 16.0).into()),
-            size: tauri::Size::Physical((48u32, 48u32).into()),
-        };
-        let position = menu_bar_popup_geometry_for_monitor(
-            rect,
-            PhysicalPosition::new(7274.0, 24.0),
-            PhysicalPosition::new(3840, 0),
-            PhysicalSize::new(3456, 2234),
-            2.0,
-            MENU_BAR_POPUP_INITIAL_HEIGHT,
-        )
-        .position;
-
-        assert_eq!(position.x, 6456);
-        assert_eq!(position.y, 80);
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn tray_popup_position_opens_above_bottom_taskbar() {
-        let rect = Rect {
-            position: Position::Physical((1780.0, 1040.0).into()),
-            size: tauri::Size::Physical((32u32, 40u32).into()),
-        };
-        let position = menu_bar_popup_geometry_for_monitor(
-            rect,
-            PhysicalPosition::new(1796.0, 1060.0),
-            PhysicalPosition::new(0, 0),
-            PhysicalSize::new(1920, 1080),
-            1.0,
-            MENU_BAR_POPUP_INITIAL_HEIGHT,
-        )
-        .position;
-
-        assert_eq!(position.x, 1500);
-        assert_eq!(position.y, 772);
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn tray_popup_position_grows_upward_above_bottom_taskbar() {
-        let rect = Rect {
-            position: Position::Physical((1780.0, 1040.0).into()),
-            size: tauri::Size::Physical((32u32, 40u32).into()),
-        };
-        let compact = menu_bar_popup_geometry_for_monitor(
-            rect,
-            PhysicalPosition::new(1796.0, 1060.0),
-            PhysicalPosition::new(0, 0),
-            PhysicalSize::new(1920, 1080),
-            1.0,
-            360.0,
-        );
-        let expanded = menu_bar_popup_geometry_for_monitor(
-            rect,
-            PhysicalPosition::new(1796.0, 1060.0),
-            PhysicalPosition::new(0, 0),
-            PhysicalSize::new(1920, 1080),
-            1.0,
-            700.0,
-        );
-
-        assert_eq!(compact.height, 360.0);
-        assert_eq!(compact.position.y, 672);
-        assert_eq!(expanded.height, 700.0);
-        assert_eq!(expanded.position.y, 332);
-        assert!(expanded.position.y < compact.position.y);
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn tray_popup_position_uses_physical_window_height_on_scaled_windows_monitor() {
-        let rect = Rect {
-            position: Position::Physical((2370.0, 1380.0).into()),
-            size: tauri::Size::Physical((48u32, 60u32).into()),
-        };
-        let geometry = menu_bar_popup_geometry_for_monitor(
-            rect,
-            PhysicalPosition::new(2394.0, 1410.0),
-            PhysicalPosition::new(0, 0),
-            PhysicalSize::new(2560, 1440),
-            1.5,
-            620.0,
-        );
-
-        assert_eq!(geometry.height, 620.0);
-        assert_eq!(geometry.position.y, 438);
     }
 }

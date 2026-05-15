@@ -401,6 +401,7 @@ fn build_conversation_list(
                 output_tokens: 0,
                 reasoning_output_tokens: 0,
                 total_tokens: 0,
+                turn_count: 0,
                 session_ids: HashSet::new(),
                 api_value_usd: 0.0,
                 source_states: HashSet::new(),
@@ -446,6 +447,7 @@ fn build_conversation_list(
         group.output_tokens += event.output_tokens;
         group.reasoning_output_tokens += event.reasoning_output_tokens;
         group.total_tokens += event.total_tokens;
+        group.turn_count += 1;
         group.api_value_usd += event.value_usd;
     }
 
@@ -500,6 +502,7 @@ fn build_conversation_list(
             output_tokens: group.output_tokens,
             reasoning_output_tokens: group.reasoning_output_tokens,
             total_tokens: group.total_tokens,
+            turn_count: group.turn_count,
             session_count: group.session_ids.len(),
             subagent_count: group.session_ids.len().saturating_sub(1),
             api_value_usd: group.api_value_usd,
@@ -2155,6 +2158,7 @@ struct ConversationAccumulator {
     output_tokens: i64,
     reasoning_output_tokens: i64,
     total_tokens: i64,
+    turn_count: usize,
     session_ids: HashSet<String>,
     api_value_usd: f64,
     source_states: HashSet<String>,
