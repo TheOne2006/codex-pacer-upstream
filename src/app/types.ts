@@ -23,12 +23,14 @@ export interface SyncSettings {
   codexHome: string | null
   autoScanEnabled: boolean
   autoScanIntervalMinutes: number
+  remoteAutoUpdateEnabled: boolean
+  remoteAutoUpdateIntervalMinutes: number
   liveQuotaRefreshIntervalSeconds: number
   hideDockIconWhenMenuBarVisible: boolean
   showMenuBarLogo: boolean
   showMenuBarDailyApiValue: boolean
   showMenuBarLiveQuotaPercent: boolean
-  menuBarLiveQuotaMetric: 'remaining_percent' | 'suggested_usage_speed'
+  menuBarLiveQuotaMetric: 'remaining_percent' | 'used_percent' | 'suggested_usage_speed'
   menuBarLiveQuotaBucket: 'five_hour' | 'seven_day'
   menuBarBucket: OverviewBucket
   menuBarSpeedShowEmoji: boolean
@@ -57,6 +59,8 @@ export interface CodexSource {
   remoteCodexHome: string | null
   localCodexHome: string | null
   selected: boolean
+  displaySelected: boolean
+  updateSelected: boolean
   status: string
   lastDiscoveredAt: string | null
   lastDownloadedAt: string | null

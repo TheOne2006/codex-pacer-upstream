@@ -38,7 +38,7 @@ export function SourceManagerModal({
   if (!isOpen) return null
 
   const remoteSources = sources.filter((source) => source.kind === 'ssh')
-  const selectedRemoteSources = remoteSources.filter((source) => source.selected)
+  const selectedRemoteSources = remoteSources.filter((source) => source.updateSelected)
   const hasRemoteSources = remoteSources.length > 0
   const anyBusy = remoteSources.some(
     (source) => downloadingSourceIds.has(source.id) || deletingSourceIds.has(source.id),
@@ -102,10 +102,10 @@ export function SourceManagerModal({
                 ? t.sources.cachedAt(formatDateTime(source.lastDownloadedAt, language))
                 : undefined
               return (
-                <article className={`source-manager-item ${source.selected ? 'selected' : ''}`} key={source.id}>
+                <article className={`source-manager-item ${source.updateSelected ? 'selected' : ''}`} key={source.id}>
                   <label className="source-manager-item-main">
                     <input
-                      checked={source.selected}
+                      checked={source.updateSelected}
                       disabled={busy}
                       onChange={(event) => onToggleSource(source, event.target.checked)}
                       type="checkbox"

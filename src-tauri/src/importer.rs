@@ -924,6 +924,12 @@ fn extract_rate_limit_samples(timestamp: &str, payload: &Value) -> Vec<RateLimit
         let Some(rate_window) = rate_limits.get(window_key) else {
             continue;
         };
+        let window_limit_id = limit_id
+            .clone()
+            .or_else(|| string_alias(rate_window, &["limit_id", "limitId"]));
+        let window_limit_name = limit_name
+            .clone()
+            .or_else(|| string_alias(rate_window, &["limit_name", "limitName"]));
         let Some(used_percent) = read_percent_alias(rate_window, &["used_percent", "usedPercent"])
         else {
             continue;
@@ -956,12 +962,8 @@ fn extract_rate_limit_samples(timestamp: &str, payload: &Value) -> Vec<RateLimit
             source_session_id: None,
             bucket: bucket.to_string(),
             sample_timestamp: timestamp.to_string(),
-            limit_id: limit_id
-                .clone()
-                .or_else(|| string_alias(rate_window, &["limit_id", "limitId"])),
-            limit_name: limit_name
-                .clone()
-                .or_else(|| string_alias(rate_window, &["limit_name", "limitName"])),
+            limit_id: window_limit_id,
+            limit_name: window_limit_name,
             plan_type: plan_type.clone(),
             window_start,
             resets_at,
@@ -1730,7 +1732,7 @@ mod tests {
       &session_path,
       concat!(
         "{\"timestamp\":\"2026-05-15T12:00:00+08:00\",\"type\":\"session_meta\",\"payload\":{\"id\":\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\"}}\n",
-        "{\"timestamp\":\"2026-05-15T12:00:00+08:00\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":1,\"cached_input_tokens\":0,\"output_tokens\":1,\"reasoning_output_tokens\":0,\"total_tokens\":2}},\"rate_limits\":{\"limit_id\":\"codex-pro\",\"limit_name\":\"Codex Pro\",\"plan_type\":\"pro\",\"credits\":{\"has_credits\":true,\"unlimited\":false,\"balance\":\"promo-balance-42\"},\"rate_limit_reached_type\":\"secondary\"}}}\n"
+        "{\"timestamp\":\"2026-05-15T12:00:00+08:00\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":1,\"cached_input_tokens\":0,\"output_tokens\":1,\"reasoning_output_tokens\":0,\"total_tokens\":2}},\"rate_limits\":{\"limit_id\":\"codex\",\"plan_type\":\"pro\",\"credits\":{\"has_credits\":true,\"unlimited\":false,\"balance\":\"promo-balance-42\"},\"rate_limit_reached_type\":\"secondary\"}}}\n"
       ),
     )
     .expect("write session");
@@ -1771,13 +1773,72 @@ mod tests {
             )
             .expect("metadata");
 
-        assert_eq!(metadata.0, "codex-pro");
+        assert_eq!(metadata.0, "codex");
         assert_eq!(metadata.1, "pro");
         assert_eq!(metadata.2, 1);
         assert_eq!(metadata.3, 0);
         assert_eq!(metadata.4, "promo-balance-42");
         assert_eq!(metadata.5, "secondary");
         assert!(metadata.6.contains("\"credits\""));
+    }
+
+    #[test]
+    fn scan_stores_model_specific_rate_limits_without_replacing_shared_records() {
+        let directory = tempdir().expect("tempdir");
+        let codex_home = directory.path().join("codex-home");
+        let sessions_dir = codex_home.join("sessions");
+        std::fs::create_dir_all(&sessions_dir).expect("sessions dir");
+
+        let session_path = sessions_dir.join("quota-shared-and-model.jsonl");
+        std::fs::write(
+      &session_path,
+      concat!(
+        "{\"timestamp\":\"2026-05-15T12:00:00+08:00\",\"type\":\"session_meta\",\"payload\":{\"id\":\"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\"}}\n",
+        "{\"timestamp\":\"2026-05-15T12:00:00+08:00\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":1,\"cached_input_tokens\":0,\"output_tokens\":1,\"reasoning_output_tokens\":0,\"total_tokens\":2}},\"rate_limits\":{\"limit_id\":\"codex\",\"plan_type\":\"pro\",\"primary\":{\"used_percent\":5.0,\"window_minutes\":300,\"resets_at\":1778853571},\"secondary\":{\"used_percent\":16.0,\"window_minutes\":10080,\"resets_at\":1779391738},\"credits\":{\"balance\":\"0\"}}}}\n",
+        "{\"timestamp\":\"2026-05-15T12:00:01+08:00\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":2,\"cached_input_tokens\":0,\"output_tokens\":1,\"reasoning_output_tokens\":0,\"total_tokens\":3}},\"rate_limits\":{\"limit_id\":\"codex_bengalfox\",\"limit_name\":\"GPT-5.3-Codex-Spark\",\"primary\":{\"used_percent\":3.0,\"window_minutes\":300,\"resets_at\":1778851362},\"secondary\":{\"used_percent\":2.0,\"window_minutes\":10080,\"resets_at\":1779391549},\"credits\":{\"balance\":\"0\"}}}}\n"
+      ),
+    )
+    .expect("write session");
+
+        let db_path = directory.path().join("usage.sqlite");
+        perform_scan(&db_path, Some(codex_home.to_string_lossy().to_string())).expect("scan");
+
+        let conn = open_connection(&db_path).expect("open db");
+        let samples = conn
+            .query_row(
+                "
+        SELECT COUNT(*), MIN(remaining_percent), MAX(remaining_percent),
+               SUM(CASE WHEN limit_id = 'codex_bengalfox' THEN 1 ELSE 0 END),
+               SUM(CASE WHEN limit_id = 'codex' THEN 1 ELSE 0 END)
+        FROM rate_limit_samples
+        WHERE source_kind = 'session'
+        ",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                },
+            )
+            .expect("query samples");
+        assert_eq!(samples, (4, 84, 98, 2, 2));
+
+        let model_metadata_count: i64 = conn
+            .query_row(
+                "
+        SELECT COUNT(*)
+        FROM rate_limit_metadata_samples
+        WHERE limit_name = 'GPT-5.3-Codex-Spark'
+        ",
+                [],
+                |row| row.get(0),
+            )
+            .expect("model metadata count");
+        assert_eq!(model_metadata_count, 1);
     }
 
     #[test]

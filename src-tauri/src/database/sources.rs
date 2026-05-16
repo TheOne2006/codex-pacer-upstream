@@ -12,9 +12,9 @@ pub fn ensure_local_codex_source(
     conn.execute(
         "
     INSERT INTO codex_sources (
-      id, kind, label, local_codex_home, selected, status, created_at, updated_at
+      id, kind, label, local_codex_home, selected, display_selected, status, created_at, updated_at
     )
-    VALUES ('local', 'local', 'localhost', ?1, 1, 'ready', ?2, ?2)
+    VALUES ('local', 'local', 'localhost', ?1, 1, 1, 'ready', ?2, ?2)
     ON CONFLICT(id) DO UPDATE SET
       local_codex_home = COALESCE(?1, codex_sources.local_codex_home),
       updated_at = excluded.updated_at
@@ -29,7 +29,7 @@ pub fn list_codex_sources(conn: &Connection) -> rusqlite::Result<Vec<CodexSource
     let mut stmt = conn.prepare(
         "
     SELECT id, kind, label, ssh_alias, host_name, user, port, remote_codex_home, local_codex_home,
-           selected, status, last_discovered_at, last_downloaded_at, last_scanned_at,
+           selected, display_selected, status, last_discovered_at, last_downloaded_at, last_scanned_at,
            last_error, created_at, updated_at
     FROM codex_sources
     ORDER BY CASE WHEN id = 'local' THEN 0 ELSE 1 END, label COLLATE NOCASE ASC, id ASC
@@ -45,7 +45,7 @@ pub fn get_codex_source(conn: &Connection, id: &str) -> rusqlite::Result<CodexSo
     conn.query_row(
         "
     SELECT id, kind, label, ssh_alias, host_name, user, port, remote_codex_home, local_codex_home,
-           selected, status, last_discovered_at, last_downloaded_at, last_scanned_at,
+           selected, display_selected, status, last_discovered_at, last_downloaded_at, last_scanned_at,
            last_error, created_at, updated_at
     FROM codex_sources
     WHERE id = ?1
@@ -66,9 +66,9 @@ pub fn upsert_ssh_codex_source(
         "
     INSERT INTO codex_sources (
       id, kind, label, ssh_alias, host_name, user, port, remote_codex_home, local_codex_home,
-      selected, status, last_discovered_at, created_at, updated_at
+      selected, display_selected, status, last_discovered_at, created_at, updated_at
     )
-    VALUES (?1, 'ssh', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'idle', ?10, ?10, ?10)
+    VALUES (?1, 'ssh', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, 'idle', ?10, ?10, ?10)
     ON CONFLICT(id) DO UPDATE SET
       label = excluded.label,
       ssh_alias = excluded.ssh_alias,
@@ -78,6 +78,7 @@ pub fn upsert_ssh_codex_source(
       remote_codex_home = excluded.remote_codex_home,
       local_codex_home = excluded.local_codex_home,
       selected = excluded.selected,
+      display_selected = excluded.display_selected,
       last_discovered_at = excluded.last_discovered_at,
       updated_at = excluded.updated_at
     ",
@@ -110,9 +111,30 @@ pub fn set_codex_source_selected(
     id: &str,
     selected: bool,
 ) -> rusqlite::Result<CodexSource> {
+    set_codex_source_update_selected(conn, id, selected)
+}
+
+pub fn set_codex_source_update_selected(
+    conn: &Connection,
+    id: &str,
+    selected: bool,
+) -> rusqlite::Result<CodexSource> {
     let now = now_utc_string();
     conn.execute(
         "UPDATE codex_sources SET selected = ?1, updated_at = ?2 WHERE id = ?3",
+        params![bool_to_i64(selected), now, id],
+    )?;
+    get_codex_source(conn, id)
+}
+
+pub fn set_codex_source_display_selected(
+    conn: &Connection,
+    id: &str,
+    selected: bool,
+) -> rusqlite::Result<CodexSource> {
+    let now = now_utc_string();
+    conn.execute(
+        "UPDATE codex_sources SET display_selected = ?1, updated_at = ?2 WHERE id = ?3",
         params![bool_to_i64(selected), now, id],
     )?;
     get_codex_source(conn, id)
@@ -197,13 +219,15 @@ fn codex_source_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CodexSourc
         remote_codex_home: row.get(7)?,
         local_codex_home: row.get(8)?,
         selected: i64_to_bool(row.get::<_, i64>(9)?),
-        status: row.get(10)?,
-        last_discovered_at: row.get(11)?,
-        last_downloaded_at: row.get(12)?,
-        last_scanned_at: row.get(13)?,
-        last_error: row.get(14)?,
-        created_at: row.get(15)?,
-        updated_at: row.get(16)?,
+        display_selected: i64_to_bool(row.get::<_, i64>(10)?),
+        update_selected: i64_to_bool(row.get::<_, i64>(9)?),
+        status: row.get(11)?,
+        last_discovered_at: row.get(12)?,
+        last_downloaded_at: row.get(13)?,
+        last_scanned_at: row.get(14)?,
+        last_error: row.get(15)?,
+        created_at: row.get(16)?,
+        updated_at: row.get(17)?,
     })
 }
 
@@ -230,6 +254,44 @@ mod tests {
     use super::*;
     use crate::database::init_db;
 
+    fn test_source_input(selected: bool) -> CodexSourceInput {
+        CodexSourceInput {
+            label: "test_box".to_string(),
+            ssh_alias: "test_box".to_string(),
+            host_name: Some("10.0.0.2".to_string()),
+            user: Some("me".to_string()),
+            port: Some(22),
+            remote_codex_home: "~/.codex".to_string(),
+            selected,
+        }
+    }
+
+    #[test]
+    fn display_and_update_selection_are_independent() {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        init_db(&conn).expect("init database");
+        let source = upsert_ssh_codex_source(
+            &conn,
+            "ssh_test_box",
+            &test_source_input(true),
+            "/tmp/codex-source",
+        )
+        .expect("create source");
+
+        assert!(source.display_selected);
+        assert!(source.update_selected);
+
+        let source = set_codex_source_display_selected(&conn, "ssh_test_box", false)
+            .expect("set display selection");
+        assert!(!source.display_selected);
+        assert!(source.update_selected);
+
+        let source = set_codex_source_update_selected(&conn, "ssh_test_box", false)
+            .expect("set update selection");
+        assert!(!source.display_selected);
+        assert!(!source.update_selected);
+    }
+
     #[test]
     fn delete_codex_source_removes_imported_source_data() {
         let mut conn = Connection::open_in_memory().expect("open in-memory database");
@@ -237,15 +299,7 @@ mod tests {
         upsert_ssh_codex_source(
             &conn,
             "ssh_test_box",
-            &CodexSourceInput {
-                label: "test_box".to_string(),
-                ssh_alias: "test_box".to_string(),
-                host_name: Some("10.0.0.2".to_string()),
-                user: Some("me".to_string()),
-                port: Some(22),
-                remote_codex_home: "~/.codex".to_string(),
-                selected: true,
-            },
+            &test_source_input(true),
             "/tmp/codex-source",
         )
         .expect("create source");

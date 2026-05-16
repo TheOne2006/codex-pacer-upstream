@@ -180,6 +180,8 @@ pub fn load_latest_rate_limit_metadata(
       credits_has_credits, credits_unlimited, credits_balance, rate_limit_reached_type
     FROM rate_limit_metadata_samples
     WHERE (?1 IS NULL OR source_kind = ?1)
+      AND (limit_id = '' OR limit_id = 'codex')
+      AND (limit_name = '' OR limit_name NOT LIKE 'GPT-%')
     ORDER BY sample_timestamp DESC, id DESC
     LIMIT 1
     ",
@@ -261,8 +263,8 @@ mod tests {
                 source_kind: "session".to_string(),
                 source_session_id: Some("session-a".to_string()),
                 sample_timestamp: "2026-05-15T10:00:00+08:00".to_string(),
-                limit_id: Some("codex-pro".to_string()),
-                limit_name: Some("Codex Pro".to_string()),
+                limit_id: Some("codex".to_string()),
+                limit_name: None,
                 plan_type: Some("pro".to_string()),
                 credits: Some(RateLimitCreditsSnapshot {
                     has_credits: Some(true),
@@ -290,7 +292,7 @@ mod tests {
             .expect("load metadata")
             .expect("metadata");
 
-        assert_eq!(metadata.limit_id.as_deref(), Some("codex-pro"));
+        assert_eq!(metadata.limit_id.as_deref(), Some("codex"));
         assert_eq!(metadata.plan_type.as_deref(), Some("pro"));
         assert_eq!(
             metadata

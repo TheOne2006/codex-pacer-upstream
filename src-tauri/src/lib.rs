@@ -23,17 +23,18 @@ use database::{
     get_display_language, get_subscription_profile, get_sync_settings, init_db,
     insert_live_rate_limit_snapshot, list_codex_sources, list_subscription_records,
     load_latest_rate_limit_metadata, open_connection, save_subscription_profile,
-    save_sync_settings, set_codex_source_selected, set_display_language,
-    update_subscription_record, upsert_ssh_codex_source,
+    save_sync_settings, set_codex_source_display_selected, set_codex_source_selected,
+    set_codex_source_update_selected, set_display_language, update_subscription_record,
+    upsert_ssh_codex_source,
 };
 use importer::{perform_scan, perform_scan_for_source, recalculate_all_session_values};
 use models::{
-    CodexAccountStatus, CodexSource, CodexSourceBatchDownloadResult, CodexSourceCandidate,
-    CodexSourceDownloadResult, CodexSourceInput, ConversationDetail, ConversationFilters,
-    ConversationListItem, DashboardSnapshot, LiveRateLimitSnapshot, MenuBarPopupQuotaSnapshot,
-    MenuBarPopupSnapshot, MenuBarPopupSuggestedSpeed, OverviewResponse, PricingCatalogEntry,
-    RateLimitWindowSnapshot, ScanResult, SubscriptionProfile, SubscriptionRecord,
-    SubscriptionRecordInput, SyncSettings,
+    is_shared_rate_limit_identity, CodexAccountStatus, CodexSource, CodexSourceBatchDownloadResult,
+    CodexSourceCandidate, CodexSourceDownloadResult, CodexSourceInput, ConversationDetail,
+    ConversationFilters, ConversationListItem, DashboardSnapshot, LiveRateLimitSnapshot,
+    MenuBarPopupQuotaSnapshot, MenuBarPopupSnapshot, MenuBarPopupSuggestedSpeed, OverviewResponse,
+    PricingCatalogEntry, RateLimitWindowSnapshot, ScanResult, SubscriptionProfile,
+    SubscriptionRecord, SubscriptionRecordInput, SyncSettings,
 };
 use pricing::{load_catalog, refresh_pricing_catalog_from_openai, seed_pricing_catalog};
 use queries::{
@@ -256,6 +257,29 @@ fn setCodexSourceSelected(
 
 #[allow(non_snake_case)]
 #[tauri::command(rename_all = "camelCase")]
+fn setCodexSourceDisplaySelected(
+    state: State<'_, AppState>,
+    source_id: String,
+    selected: bool,
+) -> Result<CodexSource, String> {
+    let conn = open_connection(&state.inner().db_path).map_err(|error| error.to_string())?;
+    set_codex_source_display_selected(&conn, &source_id, selected)
+        .map_err(|error| error.to_string())
+}
+
+#[allow(non_snake_case)]
+#[tauri::command(rename_all = "camelCase")]
+fn setCodexSourceUpdateSelected(
+    state: State<'_, AppState>,
+    source_id: String,
+    selected: bool,
+) -> Result<CodexSource, String> {
+    let conn = open_connection(&state.inner().db_path).map_err(|error| error.to_string())?;
+    set_codex_source_update_selected(&conn, &source_id, selected).map_err(|error| error.to_string())
+}
+
+#[allow(non_snake_case)]
+#[tauri::command(rename_all = "camelCase")]
 fn deleteCodexSource(
     state: State<'_, AppState>,
     source_id: String,
@@ -291,7 +315,7 @@ async fn downloadCodexSource(
 ) -> Result<CodexSourceDownloadResult, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        download_codex_source(&app, &state.db_path, &state.app_data_dir, &source_id)
+        run_single_source_download_if_idle(&app, state, &source_id)
     })
     .await
     .map_err(|error| format!("Failed to download Codex source: {error}"))?
@@ -306,10 +330,10 @@ async fn downloadCodexSources(
 ) -> Result<CodexSourceBatchDownloadResult, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        download_codex_sources_parallel(&app, &state.db_path, &state.app_data_dir, source_ids)
+        run_source_download_if_idle(&app, state, source_ids)
     })
     .await
-    .map_err(|error| format!("Failed to sync Codex sources: {error}"))
+    .map_err(|error| format!("Failed to sync Codex sources: {error}"))?
 }
 
 #[allow(non_snake_case)]
@@ -341,6 +365,8 @@ fn updateSyncSettings(
         codex_home: payload.codex_home,
         auto_scan_enabled: payload.auto_scan_enabled,
         auto_scan_interval_minutes: payload.auto_scan_interval_minutes.max(1),
+        remote_auto_update_enabled: payload.remote_auto_update_enabled,
+        remote_auto_update_interval_minutes: payload.remote_auto_update_interval_minutes.max(1),
         live_quota_refresh_interval_seconds: payload
             .live_quota_refresh_interval_seconds
             .clamp(60, 3600),
@@ -498,7 +524,7 @@ fn run_source_scan_if_idle(
         let requested = source_ids.unwrap_or_else(|| {
             sources
                 .iter()
-                .filter(|source| source.selected)
+                .filter(|source| source.display_selected)
                 .map(|source| source.id.clone())
                 .collect()
         });
@@ -527,6 +553,47 @@ fn run_source_scan_if_idle(
         Ok(results)
     })();
 
+    state.scan_in_progress.store(false, Ordering::SeqCst);
+    if result.is_ok() {
+        refresh_daily_value_menu_bar(&state);
+    }
+    result
+}
+
+fn run_source_download_if_idle(
+    app: &AppHandle,
+    state: AppState,
+    source_ids: Vec<String>,
+) -> Result<CodexSourceBatchDownloadResult, String> {
+    if state
+        .scan_in_progress
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("A scan is already running.".to_string());
+    }
+
+    let result =
+        download_codex_sources_parallel(app, &state.db_path, &state.app_data_dir, source_ids);
+    state.scan_in_progress.store(false, Ordering::SeqCst);
+    refresh_daily_value_menu_bar(&state);
+    Ok(result)
+}
+
+fn run_single_source_download_if_idle(
+    app: &AppHandle,
+    state: AppState,
+    source_id: &str,
+) -> Result<CodexSourceDownloadResult, String> {
+    if state
+        .scan_in_progress
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("A scan is already running.".to_string());
+    }
+
+    let result = download_codex_source(app, &state.db_path, &state.app_data_dir, source_id);
     state.scan_in_progress.store(false, Ordering::SeqCst);
     if result.is_ok() {
         refresh_daily_value_menu_bar(&state);
@@ -726,7 +793,7 @@ fn normalize_menu_bar_live_quota_bucket(bucket: &str) -> String {
 
 fn normalize_menu_bar_live_quota_metric(metric: &str) -> String {
     match metric {
-        "remaining_percent" | "suggested_usage_speed" => metric.to_string(),
+        "remaining_percent" | "used_percent" | "suggested_usage_speed" => metric.to_string(),
         _ => "remaining_percent".to_string(),
     }
 }
@@ -849,6 +916,10 @@ fn menu_bar_live_quota_title(
     let (_, window) = selected_menu_bar_live_quota_window(snapshot, bucket)?;
     let normalized_bucket = normalize_menu_bar_live_quota_bucket(bucket);
     match normalize_menu_bar_live_quota_metric(metric).as_str() {
+        "used_percent" => Some((
+            menu_bar_live_quota_status_label(&normalized_bucket, "used_percent"),
+            format!("{}%", window.used_percent.clamp(0, 100)),
+        )),
         "suggested_usage_speed" => {
             let velocity = suggested_usage_velocity(window, now, settings)?;
             Some((
@@ -869,6 +940,7 @@ fn menu_bar_live_quota_status_label(bucket: &str, metric: &str) -> String {
         _ => "5h",
     };
     let suffix = match normalize_menu_bar_live_quota_metric(metric).as_str() {
+        "used_percent" => "Cost",
         "suggested_usage_speed" => "Pace",
         _ => "Rest",
     };
@@ -884,6 +956,10 @@ fn menu_bar_live_quota_tooltip(
 ) -> Option<String> {
     let (label, window) = selected_menu_bar_live_quota_window(snapshot, bucket)?;
     match normalize_menu_bar_live_quota_metric(metric).as_str() {
+        "used_percent" => Some(format!(
+            "{label}已用 {}%",
+            window.used_percent.clamp(0, 100)
+        )),
         "suggested_usage_speed" => {
             let velocity = suggested_usage_velocity(window, now, settings)?;
             Some(format!(
@@ -1043,11 +1119,35 @@ fn get_live_rate_limits(
     }
 
     match query_live_rate_limits() {
-        Ok(snapshot) => {
+        Ok(snapshot)
+            if is_shared_rate_limit_identity(
+                snapshot.limit_id.as_deref(),
+                snapshot.limit_name.as_deref(),
+            ) =>
+        {
             let conn = open_connection(&state.db_path).map_err(|error| error.to_string())?;
             insert_live_rate_limit_snapshot(&conn, &snapshot).map_err(|error| error.to_string())?;
             store_live_rate_limits_cache(state, &snapshot)?;
             Ok(snapshot)
+        }
+        Ok(snapshot) => {
+            let error = format!(
+                "Codex app-server returned a model-specific rate limit ({:?}); ignoring it.",
+                snapshot.limit_name.clone().or(snapshot.limit_id.clone())
+            );
+            log::warn!("{error}");
+            if let Ok(conn) = open_connection(&state.db_path) {
+                if let Err(insert_error) = insert_live_rate_limit_snapshot(&conn, &snapshot) {
+                    log::warn!("Failed to persist model-specific rate limits: {insert_error}");
+                }
+            }
+            if let Some(snapshot) = get_live_rate_limits_history_fallback(state) {
+                if let Err(cache_error) = store_live_rate_limits_cache(state, &snapshot) {
+                    log::warn!("Failed to cache fallback live rate limits: {cache_error}");
+                }
+                return Ok(snapshot);
+            }
+            Err(error)
         }
         Err(error) => {
             log::warn!("Failed to refresh live rate limits from Codex app-server: {error}");
@@ -1082,6 +1182,8 @@ fn load_latest_persisted_rate_limit_window(
       SELECT sample_timestamp, limit_id, limit_name, plan_type, window_start, resets_at, used_percent, remaining_percent
       FROM rate_limit_samples
       WHERE bucket = ?1 AND (?2 IS NULL OR source_kind = ?2)
+        AND (limit_id = '' OR limit_id = 'codex')
+        AND (limit_name = '' OR limit_name NOT LIKE 'GPT-%')
       ORDER BY sample_timestamp DESC
       LIMIT 1
       ",
@@ -1487,7 +1589,34 @@ fn spawn_initial_scan(state: AppState) {
     });
 }
 
-fn spawn_scheduler(state: AppState) {
+fn remote_sources_due_for_auto_update(
+    sources: &[CodexSource],
+    interval_minutes: i64,
+    now: DateTime<chrono::Utc>,
+) -> Vec<String> {
+    let interval = ChronoDuration::minutes(interval_minutes.max(1));
+    sources
+        .iter()
+        .filter(|source| source.kind == "ssh")
+        .filter(|source| source.update_selected)
+        .filter(|source| source.status != "downloading")
+        .filter(|source| {
+            let reference = source
+                .last_downloaded_at
+                .as_deref()
+                .or_else(|| (source.status == "failed").then_some(source.updated_at.as_str()));
+            let Some(reference) = reference else {
+                return true;
+            };
+            DateTime::parse_from_rfc3339(reference)
+                .map(|last| now.signed_duration_since(last.with_timezone(&chrono::Utc)) >= interval)
+                .unwrap_or(true)
+        })
+        .map(|source| source.id.clone())
+        .collect()
+}
+
+fn spawn_scheduler(app: AppHandle, state: AppState) {
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
@@ -1505,24 +1634,42 @@ fn spawn_scheduler(state: AppState) {
             if menu_bar_has_visible_content(&settings) {
                 refresh_daily_value_menu_bar(&state);
             }
-            if !settings.auto_scan_enabled {
-                continue;
+
+            if settings.auto_scan_enabled {
+                let should_scan = match settings.last_scan_completed_at.as_deref() {
+                    Some(last_completed_at) => {
+                        chrono::DateTime::parse_from_rfc3339(last_completed_at)
+                            .ok()
+                            .map(|last| {
+                                let elapsed = chrono::Utc::now()
+                                    .signed_duration_since(last.with_timezone(&chrono::Utc));
+                                elapsed.num_minutes() >= settings.auto_scan_interval_minutes.max(1)
+                            })
+                            .unwrap_or(true)
+                    }
+                    None => true,
+                };
+
+                if should_scan {
+                    let _ = run_scan_if_idle(state.clone(), settings.codex_home.clone());
+                    continue;
+                }
             }
 
-            let should_scan = match settings.last_scan_completed_at.as_deref() {
-                Some(last_completed_at) => chrono::DateTime::parse_from_rfc3339(last_completed_at)
-                    .ok()
-                    .map(|last| {
-                        let elapsed = chrono::Utc::now()
-                            .signed_duration_since(last.with_timezone(&chrono::Utc));
-                        elapsed.num_minutes() >= settings.auto_scan_interval_minutes.max(1)
+            if settings.remote_auto_update_enabled {
+                let source_ids = list_codex_sources(&conn)
+                    .map(|sources| {
+                        remote_sources_due_for_auto_update(
+                            &sources,
+                            settings.remote_auto_update_interval_minutes,
+                            chrono::Utc::now(),
+                        )
                     })
-                    .unwrap_or(true),
-                None => true,
-            };
-
-            if should_scan {
-                let _ = run_scan_if_idle(state.clone(), settings.codex_home.clone());
+                    .unwrap_or_default();
+                drop(conn);
+                if !source_ids.is_empty() {
+                    let _ = run_source_download_if_idle(&app, state.clone(), source_ids);
+                }
             }
         }
     });
@@ -1617,7 +1764,7 @@ pub fn run() {
             }
             refresh_daily_value_menu_bar(&state);
             spawn_initial_scan(state.clone());
-            spawn_scheduler(state);
+            spawn_scheduler(app_handle.clone(), state);
 
             Ok(())
         })
@@ -1634,6 +1781,8 @@ pub fn run() {
             listCodexSources,
             upsertCodexSource,
             setCodexSourceSelected,
+            setCodexSourceDisplaySelected,
+            setCodexSourceUpdateSelected,
             deleteCodexSource,
             downloadCodexSource,
             downloadCodexSources,
@@ -1683,6 +1832,83 @@ mod tests {
         DateTime::parse_from_rfc3339(value)
             .expect("parse test timestamp")
             .with_timezone(&Local)
+    }
+
+    fn test_codex_source(
+        id: &str,
+        kind: &str,
+        update_selected: bool,
+        status: &str,
+        last_downloaded_at: Option<&str>,
+        updated_at: &str,
+    ) -> CodexSource {
+        CodexSource {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            label: id.to_string(),
+            ssh_alias: None,
+            host_name: None,
+            user: None,
+            port: None,
+            remote_codex_home: None,
+            local_codex_home: None,
+            selected: update_selected,
+            display_selected: true,
+            update_selected,
+            status: status.to_string(),
+            last_discovered_at: None,
+            last_downloaded_at: last_downloaded_at.map(str::to_string),
+            last_scanned_at: None,
+            last_error: None,
+            created_at: updated_at.to_string(),
+            updated_at: updated_at.to_string(),
+        }
+    }
+
+    #[test]
+    fn remote_auto_update_only_tracks_due_selected_ssh_sources() {
+        let now = DateTime::parse_from_rfc3339("2026-05-17T12:00:00+08:00")
+            .expect("parse now")
+            .with_timezone(&chrono::Utc);
+        let sources = vec![
+            test_codex_source(
+                "local",
+                "local",
+                true,
+                "ready",
+                None,
+                "2026-05-17T10:00:00+08:00",
+            ),
+            test_codex_source(
+                "ssh_due",
+                "ssh",
+                true,
+                "ready",
+                Some("2026-05-17T11:20:00+08:00"),
+                "2026-05-17T11:20:00+08:00",
+            ),
+            test_codex_source(
+                "ssh_fresh",
+                "ssh",
+                true,
+                "ready",
+                Some("2026-05-17T11:45:00+08:00"),
+                "2026-05-17T11:45:00+08:00",
+            ),
+            test_codex_source(
+                "ssh_untracked",
+                "ssh",
+                false,
+                "ready",
+                Some("2026-05-17T10:00:00+08:00"),
+                "2026-05-17T10:00:00+08:00",
+            ),
+        ];
+
+        assert_eq!(
+            remote_sources_due_for_auto_update(&sources, 30, now),
+            vec!["ssh_due".to_string()]
+        );
     }
 
     #[test]
@@ -1810,8 +2036,43 @@ mod tests {
             "5h Rest"
         );
         assert_eq!(
+            menu_bar_live_quota_status_label("seven_day", "used_percent"),
+            "7d Cost"
+        );
+        assert_eq!(
             menu_bar_live_quota_status_label("seven_day", "suggested_usage_speed"),
             "7d Pace"
+        );
+    }
+
+    #[test]
+    fn menu_bar_live_metric_can_show_used_percent_cost() {
+        let snapshot = LiveRateLimitSnapshot {
+            limit_id: Some("codex".to_string()),
+            limit_name: None,
+            plan_type: Some("pro".to_string()),
+            credits: None,
+            rate_limit_reached_type: None,
+            primary: None,
+            secondary: Some(RateLimitWindowSnapshot {
+                used_percent: 15,
+                remaining_percent: 85,
+                window_duration_mins: Some(10080),
+                resets_at: Some("2026-05-22T03:29:00+08:00".to_string()),
+                window_start: Some("2026-05-15T03:29:00+08:00".to_string()),
+            }),
+            fetched_at: "2026-05-15T20:00:00+08:00".to_string(),
+        };
+
+        assert_eq!(
+            menu_bar_live_quota_title(
+                &snapshot,
+                &speed_test_settings(),
+                "seven_day",
+                "used_percent",
+                local_time("2026-05-15T20:00:00+08:00"),
+            ),
+            Some(("7d Cost".to_string(), "15%".to_string()))
         );
     }
 
@@ -1866,8 +2127,8 @@ mod tests {
         insert_live_rate_limit_snapshot(
             &conn,
             &LiveRateLimitSnapshot {
-                limit_id: Some("old-limit".to_string()),
-                limit_name: Some("Old Limit".to_string()),
+                limit_id: Some("codex".to_string()),
+                limit_name: None,
                 plan_type: Some("old-plan".to_string()),
                 credits: None,
                 rate_limit_reached_type: None,
@@ -1889,8 +2150,8 @@ mod tests {
                 source_kind: "live".to_string(),
                 source_session_id: None,
                 sample_timestamp: "2026-05-15T12:05:00+08:00".to_string(),
-                limit_id: Some("new-limit".to_string()),
-                limit_name: Some("New Limit".to_string()),
+                limit_id: Some("codex".to_string()),
+                limit_name: None,
                 plan_type: Some("pro".to_string()),
                 credits: Some(RateLimitCreditsSnapshot {
                     has_credits: Some(true),
@@ -1902,6 +2163,36 @@ mod tests {
             }],
         )
         .expect("insert metadata");
+        conn.execute(
+            "
+        INSERT INTO rate_limit_samples (
+          source_kind, source_session_id, bucket, sample_timestamp, limit_id, limit_name, plan_type,
+          window_start, resets_at, used_percent, remaining_percent, created_at
+        )
+        VALUES
+          ('live', '', 'five_hour', '2026-05-15T12:10:00+08:00', 'codex_bengalfox', 'GPT-5.3-Codex-Spark', 'pro',
+           '2026-05-15T10:00:00+08:00', '2026-05-15T15:00:00+08:00', 3, 97, '2026-05-15T12:10:00+08:00'),
+          ('live', '', 'seven_day', '2026-05-15T12:10:00+08:00', 'codex_bengalfox', 'GPT-5.3-Codex-Spark', 'pro',
+           '2026-05-15T10:00:00+08:00', '2026-05-22T10:00:00+08:00', 2, 98, '2026-05-15T12:10:00+08:00')
+        ",
+            [],
+        )
+        .expect("insert model-specific windows");
+        conn.execute(
+            "
+        INSERT INTO rate_limit_metadata_samples (
+          source_kind, source_session_id, sample_timestamp, limit_id, limit_name, plan_type,
+          credits_has_credits, credits_unlimited, credits_balance, rate_limit_reached_type,
+          raw_rate_limits_json, created_at
+        )
+        VALUES (
+          'live', '', '2026-05-15T12:11:00+08:00', 'codex_bengalfox', 'GPT-5.3-Codex-Spark', 'pro',
+          1, 0, 'spark-balance', '', NULL, '2026-05-15T12:11:00+08:00'
+        )
+        ",
+            [],
+        )
+        .expect("insert model-specific metadata");
 
         let state = AppState {
             db_path,
@@ -1915,8 +2206,15 @@ mod tests {
             load_persisted_live_rate_limits_for_source(&state, None).expect("fallback snapshot");
 
         assert!(snapshot.primary.is_some());
-        assert_eq!(snapshot.limit_id.as_deref(), Some("new-limit"));
+        assert_eq!(snapshot.limit_id.as_deref(), Some("codex"));
         assert_eq!(snapshot.plan_type.as_deref(), Some("pro"));
+        assert_eq!(
+            snapshot
+                .primary
+                .as_ref()
+                .map(|window| window.remaining_percent),
+            Some(80)
+        );
         assert_eq!(
             snapshot
                 .credits

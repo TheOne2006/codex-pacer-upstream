@@ -259,6 +259,7 @@ export function SettingsPanel({
 
   const menuBarLiveQuotaMetricOptions = [
     { value: 'remaining_percent', label: t.settings.sections.menuBar.liveMetricRemainingPercent },
+    { value: 'used_percent', label: t.settings.sections.menuBar.liveMetricUsedPercent },
     {
       value: 'suggested_usage_speed',
       label: t.settings.sections.menuBar.liveMetricSuggestedUsageSpeed,
@@ -505,6 +506,41 @@ export function SettingsPanel({
                   />
                 </label>
 
+                <SwitchField
+                  checked={draftSync.remoteAutoUpdateEnabled}
+                  label={t.settings.sections.sync.remoteAutoUpdateEnabled}
+                  onChange={(checked) =>
+                    setDraftSync((current) =>
+                      current
+                        ? {
+                            ...current,
+                            remoteAutoUpdateEnabled: checked,
+                          }
+                        : current,
+                    )
+                  }
+                />
+
+                <label className="field">
+                  <span>{t.settings.sections.sync.remoteAutoUpdateIntervalMinutes}</span>
+                  <input
+                    min={1}
+                    step={1}
+                    type="number"
+                    value={draftSync.remoteAutoUpdateIntervalMinutes}
+                    onChange={(event) =>
+                      setDraftSync((current) =>
+                        current
+                          ? {
+                              ...current,
+                              remoteAutoUpdateIntervalMinutes: Math.max(1, Number(event.target.value || 30)),
+                            }
+                          : current,
+                      )
+                    }
+                  />
+                </label>
+
                 <label className="field">
                   <span>{t.settings.sections.sync.liveQuotaRefreshIntervalSeconds}</span>
                   <input
@@ -643,6 +679,7 @@ export function SettingsPanel({
                               ...current,
                               menuBarLiveQuotaMetric: event.target.value as
                                 | 'remaining_percent'
+                                | 'used_percent'
                                 | 'suggested_usage_speed',
                             }
                           : current,

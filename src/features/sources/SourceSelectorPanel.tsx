@@ -20,7 +20,7 @@ export function SourceSelectorPanel({
   onToggleSource,
 }: SourceSelectorPanelProps) {
   const { t } = useI18n()
-  const selectedCount = sources.filter((source) => source.selected).length
+  const selectedCount = sources.filter((source) => source.displaySelected).length
   const remoteCount = sources.filter((source) => source.kind === 'ssh').length
   const selectedSummary = sourceSelectionSummary(sources, t)
 
@@ -45,7 +45,7 @@ export function SourceSelectorPanel({
               <article className="source-row source-row--select" key={source.id}>
                 <label className="source-row-main">
                   <input
-                    checked={source.selected}
+                    checked={source.displaySelected}
                     onChange={(event) => onToggleSource(source, event.target.checked)}
                     type="checkbox"
                   />

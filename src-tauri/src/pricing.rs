@@ -554,22 +554,22 @@ pub fn display_name_for_model(model_id: &str) -> String {
 
 pub fn model_color(model_id: &str) -> &'static str {
     match normalize_model_id(model_id).as_str() {
-        "codex-auto-review" => "#60a5fa",
-        "gpt-5.5" => "#d946ef",
-        "gpt-5.5-pro" => "#c026d3",
-        "gpt-5.4" => "#ff6b35",
-        "gpt-5.4-mini" => "#ff915c",
-        "gpt-5.4-nano" => "#ffb67d",
-        "gpt-5.4-pro" => "#e85d04",
-        "gpt-5.3-codex" => "#ff9f1c",
-        "gpt-5.3-codex-spark" => "#ffd166",
-        "gpt-5.2" => "#1f9d8f",
-        "gpt-5.2-codex" => "#2ec4b6",
-        "gpt-5-codex" => "#3a86ff",
-        "gpt-5.1-codex-max" => "#8338ec",
-        "gpt-5.1-codex" => "#8d99ae",
-        "gpt-5.1-codex-mini" => "#457b9d",
-        _ => "#7c7f86",
+        "codex-auto-review" => "#60A5FA",
+        "gpt-5.5" => "#E879F9",
+        "gpt-5.5-pro" => "#C084FC",
+        "gpt-5.4" => "#F97316",
+        "gpt-5.4-mini" => "#FB923C",
+        "gpt-5.4-nano" => "#FDBA74",
+        "gpt-5.4-pro" => "#EA580C",
+        "gpt-5.3-codex" => "#F59E0B",
+        "gpt-5.3-codex-spark" => "#FACC15",
+        "gpt-5.2" => "#14B8A6",
+        "gpt-5.2-codex" => "#34D399",
+        "gpt-5-codex" => "#3B82F6",
+        "gpt-5.1-codex-max" => "#6366F1",
+        "gpt-5.1-codex" => "#64748B",
+        "gpt-5.1-codex-mini" => "#38BDF8",
+        _ => "#94A3B8",
     }
 }
 

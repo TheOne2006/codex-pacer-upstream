@@ -5,6 +5,19 @@ import { useI18n } from '../app/useI18n'
 import type { ShareDimension, ShareMode, ShareSlice } from '../app/types'
 import { ResponsiveChart } from './ResponsiveChart'
 
+const SOURCE_DISTRIBUTION_COLORS = [
+  '#FBBF24',
+  '#60A5FA',
+  '#34D399',
+  '#A78BFA',
+  '#F472B6',
+  '#22D3EE',
+  '#FB7185',
+  '#A3E635',
+  '#F97316',
+  '#94A3B8',
+]
+
 interface ModelShareChartProps {
   data: ShareSlice[]
   mode: ShareMode
@@ -35,6 +48,13 @@ export function ModelShareChart({
       metric: effectiveMode === 'value' ? item.apiValueUsd : item.totalTokens,
     }))
     .sort((left, right) => right.metric - left.metric)
+    .map((item, index) => ({
+      ...item,
+      color:
+        dimension === 'source'
+          ? SOURCE_DISTRIBUTION_COLORS[index % SOURCE_DISTRIBUTION_COLORS.length]
+          : item.color,
+    }))
   const hasRenderableData = chartData.some((item) => item.metric > 0)
   const fallbackNote = t.charts.valueUnavailableTokenFallback
 

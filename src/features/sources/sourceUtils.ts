@@ -5,7 +5,7 @@ export function sourceSelectionSummary(sources: CodexSource[], t: TranslationSet
   if (sources.length === 0) {
     return 'localhost'
   }
-  const selected = sources.filter((source) => source.selected)
+  const selected = sources.filter((source) => source.displaySelected)
   if (selected.length === 0) {
     return t.sources.noneSelected
   }

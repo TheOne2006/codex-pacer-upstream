@@ -84,10 +84,12 @@ CREATE TABLE IF NOT EXISTS session_overrides (
 
 CREATE TABLE IF NOT EXISTS sync_settings (
   singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
-  sync_settings_schema_version INTEGER NOT NULL DEFAULT 3,
+  sync_settings_schema_version INTEGER NOT NULL DEFAULT 5,
   codex_home TEXT,
   auto_scan_enabled INTEGER NOT NULL,
   auto_scan_interval_minutes INTEGER NOT NULL,
+  remote_auto_update_enabled INTEGER NOT NULL DEFAULT 0,
+  remote_auto_update_interval_minutes INTEGER NOT NULL DEFAULT 30,
   live_quota_refresh_interval_seconds INTEGER NOT NULL DEFAULT 300,
   hide_dock_icon_when_menu_bar_visible INTEGER NOT NULL DEFAULT 1,
   show_menu_bar_logo INTEGER NOT NULL DEFAULT 1,
@@ -167,6 +169,7 @@ CREATE TABLE IF NOT EXISTS codex_sources (
   remote_codex_home TEXT,
   local_codex_home TEXT,
   selected INTEGER NOT NULL DEFAULT 1,
+  display_selected INTEGER NOT NULL DEFAULT 1,
   status TEXT NOT NULL DEFAULT 'idle',
   last_discovered_at TEXT,
   last_downloaded_at TEXT,

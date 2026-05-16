@@ -32,6 +32,8 @@ function createMockSyncSettings(): SyncSettings {
     codexHome: null,
     autoScanEnabled: false,
     autoScanIntervalMinutes: 5,
+    remoteAutoUpdateEnabled: false,
+    remoteAutoUpdateIntervalMinutes: 30,
     liveQuotaRefreshIntervalSeconds: 300,
     hideDockIconWhenMenuBarVisible: true,
     showMenuBarLogo: true,
@@ -84,6 +86,8 @@ function createMockCodexSources(): CodexSource[] {
       remoteCodexHome: null,
       localCodexHome: '~/.codex',
       selected: true,
+      displaySelected: true,
+      updateSelected: true,
       status: 'ready',
       lastDiscoveredAt: null,
       lastDownloadedAt: null,
@@ -280,6 +284,8 @@ export async function upsertCodexSource(payload: CodexSourceInput): Promise<Code
     remoteCodexHome: payload.remoteCodexHome,
     localCodexHome: null,
     selected: payload.selected,
+    displaySelected: payload.selected,
+    updateSelected: payload.selected,
     status: 'idle',
     lastDiscoveredAt: nowIso(),
     lastDownloadedAt: null,
@@ -295,6 +301,24 @@ export async function setCodexSourceSelected(sourceId: string, selected: boolean
     ...createMockCodexSources()[0],
     id: sourceId,
     selected,
+    updateSelected: selected,
+  }))
+}
+
+export async function setCodexSourceDisplaySelected(sourceId: string, selected: boolean): Promise<CodexSource> {
+  return invokeOrMock('setCodexSourceDisplaySelected', { sourceId, selected }, () => ({
+    ...createMockCodexSources()[0],
+    id: sourceId,
+    displaySelected: selected,
+  }))
+}
+
+export async function setCodexSourceUpdateSelected(sourceId: string, selected: boolean): Promise<CodexSource> {
+  return invokeOrMock('setCodexSourceUpdateSelected', { sourceId, selected }, () => ({
+    ...createMockCodexSources()[0],
+    id: sourceId,
+    selected,
+    updateSelected: selected,
   }))
 }
 

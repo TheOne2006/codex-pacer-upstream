@@ -75,6 +75,8 @@ pub struct SyncSettings {
     pub codex_home: Option<String>,
     pub auto_scan_enabled: bool,
     pub auto_scan_interval_minutes: i64,
+    pub remote_auto_update_enabled: bool,
+    pub remote_auto_update_interval_minutes: i64,
     pub live_quota_refresh_interval_seconds: i64,
     pub hide_dock_icon_when_menu_bar_visible: bool,
     pub show_menu_bar_logo: bool,
@@ -104,6 +106,8 @@ impl Default for SyncSettings {
             codex_home: None,
             auto_scan_enabled: true,
             auto_scan_interval_minutes: 5,
+            remote_auto_update_enabled: false,
+            remote_auto_update_interval_minutes: 30,
             live_quota_refresh_interval_seconds: 300,
             hide_dock_icon_when_menu_bar_visible: true,
             show_menu_bar_logo: true,
@@ -142,6 +146,8 @@ pub struct CodexSource {
     pub remote_codex_home: Option<String>,
     pub local_codex_home: Option<String>,
     pub selected: bool,
+    pub display_selected: bool,
+    pub update_selected: bool,
     pub status: String,
     pub last_discovered_at: Option<String>,
     pub last_downloaded_at: Option<String>,
@@ -329,6 +335,23 @@ pub struct RateLimitMetadataSampleRecord {
     pub credits: Option<RateLimitCreditsSnapshot>,
     pub rate_limit_reached_type: Option<String>,
     pub raw_rate_limits_json: Option<String>,
+}
+
+pub fn is_shared_rate_limit_identity(limit_id: Option<&str>, limit_name: Option<&str>) -> bool {
+    let limit_id = limit_id.map(str::trim).filter(|value| !value.is_empty());
+    let limit_name = limit_name.map(str::trim).filter(|value| !value.is_empty());
+    if limit_name
+        .map(|value| value.to_ascii_lowercase().starts_with("gpt-"))
+        .unwrap_or(false)
+    {
+        return false;
+    }
+
+    match limit_id {
+        None => true,
+        Some("codex") => true,
+        Some(_) => false,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

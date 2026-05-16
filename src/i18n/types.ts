@@ -245,6 +245,9 @@ export type TranslationSet = {
         autoScanEnabled: string
         autoScanEnabledNote: string
         autoScanIntervalMinutes: string
+        remoteAutoUpdateEnabled: string
+        remoteAutoUpdateEnabledNote: string
+        remoteAutoUpdateIntervalMinutes: string
         liveQuotaRefreshIntervalSeconds: string
         liveQuotaRefreshNote: string
       }
@@ -264,6 +267,7 @@ export type TranslationSet = {
         rangeNote: string
         liveMetric: string
         liveMetricRemainingPercent: string
+        liveMetricUsedPercent: string
         liveMetricSuggestedUsageSpeed: string
         liveMetricNote: string
         quotaSource: string

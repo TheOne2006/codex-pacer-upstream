@@ -29,7 +29,8 @@ import {
   refreshPricing,
   scanCodexSources,
   scanCodexUsage,
-  setCodexSourceSelected,
+  setCodexSourceDisplaySelected,
+  setCodexSourceUpdateSelected,
   upsertCodexSource,
   updateSubscriptionRecord,
   updateSyncSettings,
@@ -165,9 +166,9 @@ function App() {
   const latestDetailRequestIdRef = useRef(0)
   const [hasBootstrapped, setHasBootstrapped] = useState(false)
   const anchor = anchorForBucket(bucket, calendarAnchors)
-  const selectedSourceIds = codexSources.filter((source) => source.selected).map((source) => source.id)
-  const sourceSelectionKey = selectedSourceIds.join(',')
-  const dashboardSourceIds = selectedSourceIds.length > 0 ? selectedSourceIds : null
+  const displaySourceIds = codexSources.filter((source) => source.displaySelected).map((source) => source.id)
+  const sourceSelectionKey = displaySourceIds.join(',')
+  const dashboardSourceIds = displaySourceIds.length > 0 ? displaySourceIds : null
   const statusMessage = statusMessageKey ? statusMessageForKey(statusMessageKey, t) : statusMessageText
   const setStatusMessage = useCallback((next: string | ((current: string) => string)) => {
     setStatusMessageKey(null)
@@ -494,19 +495,29 @@ function App() {
     }
   }
 
-  async function handleToggleSource(source: CodexSource, selected: boolean) {
-    if (!selected && codexSources.filter((item) => item.selected).length <= 1) {
+  async function handleToggleDisplaySource(source: CodexSource, selected: boolean) {
+    if (!selected && codexSources.filter((item) => item.displaySelected).length <= 1) {
       setSourceSelectionMessage(t.sources.keepOneSelected)
       return
     }
     try {
-      const updated = await setCodexSourceSelected(source.id, selected)
+      const updated = await setCodexSourceDisplaySelected(source.id, selected)
       setCodexSources((current) => current.map((item) => (item.id === updated.id ? updated : item)))
       setSourceSelectionMessage('')
       detailCacheRef.current.clear()
       await loadShell(false)
     } catch (error) {
       setSourceSelectionMessage(String(error))
+    }
+  }
+
+  async function handleToggleUpdateSource(source: CodexSource, selected: boolean) {
+    try {
+      const updated = await setCodexSourceUpdateSelected(source.id, selected)
+      setCodexSources((current) => current.map((item) => (item.id === updated.id ? updated : item)))
+      setSourceManagerMessage('')
+    } catch (error) {
+      setSourceManagerMessage(String(error))
     }
   }
 
@@ -611,7 +622,7 @@ function App() {
   }
 
   async function handleDownloadSelectedSources() {
-    const selectedRemoteSources = codexSources.filter((source) => source.kind === 'ssh' && source.selected)
+    const selectedRemoteSources = codexSources.filter((source) => source.kind === 'ssh' && source.updateSelected)
     if (selectedRemoteSources.length === 0) {
       setSourceManagerMessage(t.sources.noSelectedSshServers)
       return
@@ -624,7 +635,7 @@ function App() {
     if (source.kind !== 'ssh') {
       return
     }
-    if (source.selected && codexSources.filter((item) => item.selected && item.id !== source.id).length === 0) {
+    if (source.displaySelected && codexSources.filter((item) => item.displaySelected && item.id !== source.id).length === 0) {
       setSourceSelectionMessage(t.sources.keepOneSelected)
       setSourcePanelOpen(true)
       return
@@ -866,7 +877,7 @@ function App() {
 	                    isOpen={sourcePanelOpen}
 	                    message={sourceSelectionMessage}
 	                    onToggleOpen={() => setSourcePanelOpen((current) => !current)}
-	                    onToggleSource={handleToggleSource}
+	                    onToggleSource={handleToggleDisplaySource}
 	                    sources={codexSources}
 	                  />
                   <div className="time-filter-panel">
@@ -1485,7 +1496,7 @@ function App() {
         onDownloadSource={handleDownloadSource}
         onDownloadSelectedSources={handleDownloadSelectedSources}
         onOpenAddModal={handleOpenSourceModal}
-        onToggleSource={handleToggleSource}
+        onToggleSource={handleToggleUpdateSource}
         sources={codexSources}
       />
 

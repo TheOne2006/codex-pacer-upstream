@@ -17,7 +17,8 @@ pub use rate_limit_samples::{
 };
 pub use sources::{
     delete_codex_source, ensure_local_codex_source, get_codex_source, list_codex_sources,
-    set_codex_source_selected, update_codex_source_download_state, upsert_ssh_codex_source,
+    set_codex_source_display_selected, set_codex_source_selected, set_codex_source_update_selected,
+    update_codex_source_download_state, upsert_ssh_codex_source,
 };
 pub use subscriptions::{
     canonical_subscription_currency, create_subscription_record, delete_subscription_record,
@@ -59,6 +60,7 @@ pub fn init_db(conn: &Connection) -> rusqlite::Result<()> {
 
     ensure_rate_limit_metadata_schema(conn)?;
     ensure_sync_settings_schema(conn)?;
+    ensure_codex_sources_schema(conn)?;
     ensure_singletons(conn)?;
     ensure_local_codex_source(conn, None)?;
 
@@ -101,6 +103,44 @@ fn ensure_sync_settings_schema(conn: &Connection) -> rusqlite::Result<()> {
             [],
         )?;
     }
+    let has_remote_auto_update_enabled: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('sync_settings') WHERE name = 'remote_auto_update_enabled'",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_remote_auto_update_enabled == 0 {
+        conn.execute(
+            "ALTER TABLE sync_settings ADD COLUMN remote_auto_update_enabled INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    let has_remote_auto_update_interval_minutes: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('sync_settings') WHERE name = 'remote_auto_update_interval_minutes'",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_remote_auto_update_interval_minutes == 0 {
+        conn.execute(
+            "ALTER TABLE sync_settings ADD COLUMN remote_auto_update_interval_minutes INTEGER NOT NULL DEFAULT 30",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+fn ensure_codex_sources_schema(conn: &Connection) -> rusqlite::Result<()> {
+    let has_display_selected: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('codex_sources') WHERE name = 'display_selected'",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_display_selected == 0 {
+        conn.execute(
+            "ALTER TABLE codex_sources ADD COLUMN display_selected INTEGER NOT NULL DEFAULT 1",
+            [],
+        )?;
+        conn.execute("UPDATE codex_sources SET display_selected = selected", [])?;
+    }
     Ok(())
 }
 
@@ -123,6 +163,7 @@ fn ensure_singletons(conn: &Connection) -> rusqlite::Result<()> {
     INSERT INTO sync_settings (
       singleton_id, sync_settings_schema_version,
       codex_home, auto_scan_enabled, auto_scan_interval_minutes,
+      remote_auto_update_enabled, remote_auto_update_interval_minutes,
       live_quota_refresh_interval_seconds, hide_dock_icon_when_menu_bar_visible,
       show_menu_bar_logo,
       show_menu_bar_daily_api_value,
@@ -135,7 +176,7 @@ fn ensure_singletons(conn: &Connection) -> rusqlite::Result<()> {
       menu_bar_popup_show_reset_timeline, menu_bar_popup_show_actions,
       last_scan_started_at, last_scan_completed_at, updated_at
     )
-    VALUES (1, 4, NULL, 1, 5, 300, 1, 1, 1, 0, 'remaining_percent', 'five_hour', 'day', 1, 85, 115, '🟢', '🔥', '🐢', 1, ?2, 1, 1, NULL, NULL, ?1)
+    VALUES (1, 5, NULL, 1, 5, 0, 30, 300, 1, 1, 1, 0, 'remaining_percent', 'five_hour', 'day', 1, 85, 115, '🟢', '🔥', '🐢', 1, ?2, 1, 1, NULL, NULL, ?1)
     ON CONFLICT(singleton_id) DO NOTHING
     ",
         params![now, sync_settings::default_menu_bar_popup_modules_json()],
@@ -144,11 +185,11 @@ fn ensure_singletons(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute(
         "
     UPDATE sync_settings
-    SET sync_settings_schema_version = 4,
+    SET sync_settings_schema_version = 5,
         updated_at = ?1
     WHERE singleton_id = 1
       AND sync_settings_schema_version >= 3
-      AND sync_settings_schema_version < 4
+      AND sync_settings_schema_version < 5
     ",
         params![now],
     )?;
@@ -156,7 +197,7 @@ fn ensure_singletons(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute(
         "
     UPDATE sync_settings
-    SET sync_settings_schema_version = 4,
+    SET sync_settings_schema_version = 5,
         hide_dock_icon_when_menu_bar_visible = 1,
         updated_at = ?1
     WHERE singleton_id = 1
@@ -202,6 +243,8 @@ mod tests {
         let settings = get_sync_settings(&conn).expect("load settings");
         assert!(settings.show_menu_bar_logo);
         assert!(settings.hide_dock_icon_when_menu_bar_visible);
+        assert!(!settings.remote_auto_update_enabled);
+        assert_eq!(settings.remote_auto_update_interval_minutes, 30);
         assert_eq!(settings.live_quota_refresh_interval_seconds, 300);
         assert_eq!(
             settings.menu_bar_popup_modules,
